@@ -1,0 +1,11 @@
+[project]
+name = "relive"
+version = "0.1.0"
+description = "Live stream replay buffer DVR tool"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.5",
+    "python-mpv>=1.0",
+    "httpx",
+]
