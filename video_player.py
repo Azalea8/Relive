@@ -50,7 +50,7 @@ class VideoPlayer(QObject):
         self._log.info("mpv instance created")
 
     def reinitialize(self, source: str, start_pos: float | None = None,
-                     expected_duration: float = 0.0):
+                     expected_duration: float = 0.0, sub_file: str = ""):
         """Destroy current mpv and create a fresh one playing `source`.
 
         Args:
@@ -58,9 +58,10 @@ class VideoPlayer(QObject):
             start_pos: If set, seek to this position once playback starts.
             expected_duration: Expected total duration — seek waits until
                 mpv reports dur >= 80% of this before executing.
+            sub_file: Optional ASS subtitle file to load.
         """
-        self._log.info("[REINIT] source=%s start_pos=%s expected_dur=%.1f",
-                       source[:120], start_pos, expected_duration)
+        self._log.info("[REINIT] source=%s start_pos=%s expected_dur=%.1f sub_file=%s",
+                       source[:120], start_pos, expected_duration, sub_file)
 
         # Destroy old instance
         if self._player is not None:
@@ -82,6 +83,11 @@ class VideoPlayer(QObject):
         self._create_mpv()
         self._pending_seek = start_pos
         self._timer.start(33)
+
+        # Load subtitle BEFORE play (matching StreamSlice behavior)
+        if sub_file:
+            self._player.sub_files = sub_file
+            self._log.info("[REINIT] sub_files=%s OK", sub_file)
 
         # Play directly — source is either a URL or a pre-built snapshot m3u8
         is_url = source.startswith("http://") or source.startswith("https://")
@@ -165,6 +171,22 @@ class VideoPlayer(QObject):
     def set_speed(self, speed: float):
         if self._player:
             self._player.speed = speed
+
+    def set_sub_file(self, path: str):
+        """Load a subtitle file immediately."""
+        if self._player:
+            try:
+                self._player.sub_files = path
+                self._log.info("set sub_files=%s OK", path)
+            except Exception as e:
+                self._log.error("set sub_files failed: %s", e)
+
+    def sub_reload(self):
+        if self._player:
+            try:
+                self._player.command("sub-reload", "1")
+            except Exception:
+                pass
 
     def speed(self) -> float:
         return self._player.speed if self._player else 1.0

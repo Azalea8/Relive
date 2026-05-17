@@ -1,7 +1,7 @@
 """ReLive configuration constants."""
 import os
 
-# HLS segment duration in seconds
+# Segment duration in seconds
 SEGMENT_SEC = 4
 
 # Maximum cache duration in hours
@@ -29,7 +29,8 @@ else:
     _BASE = os.path.dirname(os.path.abspath(__file__))
 
 CACHE_DIR = os.path.join(_BASE, "cache")
-M3U8_PATH = os.path.join(CACHE_DIR, "playlist.m3u8")
+SEGMENT_DIR = os.path.join(CACHE_DIR, "videos")
+M3U8_PATH = os.path.join(SEGMENT_DIR, "playlist.m3u8")
 DANMAKU_DIR = os.path.join(CACHE_DIR, "danmaku")
 EXPORT_DIR = os.path.join(_BASE, "exports")
 BIN_DIR = os.path.join(_BASE, "bin")
@@ -42,3 +43,12 @@ HISTORY_PATH = os.path.join(_BASE, "history.json")
 
 # Default Douyu quality
 DEFAULT_QUALITY = "origin"
+
+# Danmaku rendering
+DANMAKU_FONT_SIZE = 36
+DANMAKU_DURATION = 14.0      # scroll duration (seconds)
+DANMAKU_OPACITY = 0.8
+DANMAKU_DM_RATE = 1.0        # fraction of screen height for danmaku
+DANMAKU_DENSITY = 1.0
+DANMAKU_OUTLINE_SIZE = 1.0
+DANMAKU_OUTLINE_COLOR = "000000"

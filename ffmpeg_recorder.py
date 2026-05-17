@@ -1,4 +1,4 @@
-"""FFmpeg recorder — HLS muxer with append_list + delete_segments."""
+"""FFmpeg recorder — segment muxer, TS files only. m3u8 maintained by Python."""
 import atexit
 import os
 import signal
@@ -12,12 +12,10 @@ import config
 
 log = _log("recorder")
 
-# Track all live ffmpeg PIDs for cleanup on abnormal exit
 _live_pids: set[int] = set()
 
 
 def _cleanup_all():
-    """Kill any surviving ffmpeg processes on exit."""
     for pid in _live_pids:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -30,9 +28,9 @@ atexit.register(_cleanup_all)
 
 
 class FFmpegRecorder(QObject):
-    """Manages an FFmpeg subprocess that captures a live stream into HLS segments."""
+    """Manages an FFmpeg subprocess that captures a live stream into TS segments."""
 
-    state_changed = pyqtSignal(str)  # "recording", "stopped", "error"
+    state_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,45 +38,38 @@ class FFmpegRecorder(QObject):
         self._stream_url: str = ""
         self._start_time: float = 0.0
         self._running = False
-        self._last_m3u8_mtime: float = 0.0
+        self._last_seglist_mtime: float = 0.0
         self._last_mtime_check: float = 0.0
 
-        # Health check timer
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._check_health)
         self._health_timer.start(5000)
 
     def start(self, stream_url: str):
-        """Start FFmpeg HLS recording."""
         if self._running:
             log.info("[START] stopping existing FFmpeg first")
             self.stop()
 
         self._stream_url = stream_url
-        os.makedirs(config.CACHE_DIR, exist_ok=True)
-        log.info("[START] cache_dir=%s exists=%s", config.CACHE_DIR, os.path.isdir(config.CACHE_DIR))
-        log.info("[START] m3u8_path=%s exists=%s", config.M3U8_PATH, os.path.exists(config.M3U8_PATH))
+        os.makedirs(config.SEGMENT_DIR, exist_ok=True)
 
-        # Calculate hls_list_size from CACHE_HOURS
-        hls_list_size = int(config.CACHE_HOURS * 3600 / config.SEGMENT_SEC)
-
-        # Strip :443 from URL — some CDNs behave differently with explicit port
         clean_url = stream_url.replace(":443", "") if ":443" in stream_url else stream_url
+
+        output_pattern = os.path.join(config.SEGMENT_DIR, "%Y%m%d_%H%M%S.ts")
 
         cmd = [
             config.FFMPEG_PATH,
             "-loglevel", "warning",
             "-y",
-            # HTTPS protocol options (must come before -i)
-            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-            "-multiple_requests", "1",
             "-i", clean_url,
             "-c", "copy",
             "-f", "hls",
             "-hls_time", str(config.SEGMENT_SEC),
-            "-hls_list_size", str(hls_list_size),
-            "-hls_flags", "delete_segments+append_list+omit_endlist",
-            "-hls_segment_filename", os.path.join(config.CACHE_DIR, "%06d.ts"),
+            "-hls_segment_type", "mpegts",
+            "-hls_flags", "append_list",
+            "-hls_list_size", "0",
+            "-strftime", "1",
+            "-hls_segment_filename", output_pattern,
             config.M3U8_PATH,
         ]
 
@@ -90,10 +81,8 @@ class FFmpegRecorder(QObject):
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
-        # Pass proxy environment variables to FFmpeg
         env = os.environ.copy()
-        proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
-        for key in proxy_keys:
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             val = os.environ.get(key)
             if val:
                 env.setdefault(key, val)
@@ -104,7 +93,7 @@ class FFmpegRecorder(QObject):
         try:
             self._process = subprocess.Popen(
                 cmd,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 creationflags=creationflags,
@@ -116,24 +105,19 @@ class FFmpegRecorder(QObject):
             self.state_changed.emit("error")
             return
 
-        # Drain stderr in background to avoid pipe buffer deadlock
-        self._stderr_thread = threading.Thread(
-            target=self._drain_stderr, daemon=True,
-        )
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
         _live_pids.add(self._process.pid)
 
         self._start_time = time.time()
-        self._last_m3u8_mtime = self._get_m3u8_mtime()
+        self._last_seglist_mtime = self._get_seglist_mtime()
         self._last_mtime_check = time.time()
         self._running = True
 
-        log.info("[START] FFmpeg HLS started, PID=%d, m3u8_mtime=%.3f",
-                 self._process.pid, self._last_m3u8_mtime)
+        log.info("[START] FFmpeg segment started, PID=%d", self._process.pid)
         self.state_changed.emit("recording")
 
     def stop(self):
-        """Stop FFmpeg (HLS muxer doesn't respond to stdin 'q', use kill)."""
         if not self._process or self._process.poll() is not None:
             exit_code = self._process.returncode if self._process else "N/A"
             log.info("[STOP] FFmpeg already dead or None, exit_code=%s", exit_code)
@@ -142,15 +126,24 @@ class FFmpegRecorder(QObject):
             self._close_stderr()
             return
 
-        log.info("[STOP] killing FFmpeg PID=%d, uptime=%.1fs", self._process.pid, time.time() - self._start_time)
-        _kill_process_tree(self._process)
+        log.info("[STOP] sending 'q' to FFmpeg PID=%d, uptime=%.1fs",
+                 self._process.pid, time.time() - self._start_time)
+        try:
+            self._process.stdin.write(b"q\n")
+            self._process.stdin.flush()
+        except (OSError, BrokenPipeError):
+            pass
 
         try:
             self._process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            pass
+            log.warning("[STOP] FFmpeg did not exit in 5s, killing")
+            _kill_process_tree(self._process)
+            try:
+                self._process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
 
-        # Wait for stderr drain to finish
         if hasattr(self, '_stderr_thread') and self._stderr_thread.is_alive():
             self._stderr_thread.join(timeout=2.0)
 
@@ -163,33 +156,33 @@ class FFmpegRecorder(QObject):
         return self._running and self._process is not None and self._process.poll() is None
 
     @property
+    def start_time(self) -> float:
+        return self._start_time
+
+    @property
     def elapsed(self) -> float:
         if not self._running:
             return 0.0
         return time.time() - self._start_time
 
-    def _get_m3u8_mtime(self) -> float:
-        """Get m3u8 file modification time."""
+    def _get_seglist_mtime(self) -> float:
         try:
             return os.path.getmtime(config.M3U8_PATH)
         except OSError:
             return 0.0
 
     def _drain_stderr(self):
-        """Read stderr pipe in background, keep last N lines, write to log file."""
         try:
             for raw_line in self._process.stderr:
                 line = raw_line.decode("utf-8", errors="replace").rstrip()
                 self._stderr_lines.append(line)
                 log.debug("[STDERR] %s", line)
-                # Keep only last 200 lines in memory
                 if len(self._stderr_lines) > 200:
                     self._stderr_lines = self._stderr_lines[-100:]
         except (ValueError, OSError) as e:
             log.info("[STDERR] drain ended: %s", e)
 
     def _flush_stderr_log(self):
-        """Write collected stderr to log file."""
         try:
             with open(self._stderr_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(self._stderr_lines))
@@ -203,38 +196,18 @@ class FFmpegRecorder(QObject):
             pass
 
     def _check_health(self):
-        """Periodic health check — detect stalled or dead recording."""
         if not self._running:
             return
 
         now = time.time()
         uptime = now - self._start_time
 
-        # Check if process is still alive
         poll_result = self._process.poll() if self._process else None
         if self._process and poll_result is not None:
-            # Process died
             self._stderr_thread.join(timeout=1.0)
             tail = self._stderr_lines[-10:] if self._stderr_lines else ["(no stderr)"]
             log.error("[HEALTH] FFmpeg DIED: exit_code=%s uptime=%.1fs PID=%d",
                       poll_result, uptime, self._process.pid)
-            # Dump m3u8 state at time of death
-            try:
-                if os.path.exists(config.M3U8_PATH):
-                    with open(config.M3U8_PATH, "r", encoding="utf-8") as f:
-                        m3u8_lines = f.readlines()
-                    log.error("[HEALTH] m3u8 at death (%d lines):", len(m3u8_lines))
-                    for ml in m3u8_lines[-15:]:
-                        log.error("[HEALTH]   %s", ml.rstrip())
-                else:
-                    log.error("[HEALTH] m3u8 does NOT exist at death")
-                # List ts files in cache
-                ts_files = sorted([f for f in os.listdir(config.CACHE_DIR) if f.endswith(".ts")])
-                log.error("[HEALTH] cache ts files: %d total", len(ts_files))
-                if ts_files:
-                    log.error("[HEALTH]   first=%s last=%s", ts_files[0], ts_files[-1])
-            except Exception as dump_err:
-                log.error("[HEALTH] failed to dump cache state: %s", dump_err)
             log.error("[HEALTH] Last stderr (%d lines total):\n  %s",
                       len(self._stderr_lines), "\n  ".join(tail))
             _live_pids.discard(self._process.pid)
@@ -243,17 +216,12 @@ class FFmpegRecorder(QObject):
             self.state_changed.emit("error")
             return
 
-        # Check m3u8 liveness
-        current_mtime = self._get_m3u8_mtime()
+        current_mtime = self._get_seglist_mtime()
         time_since_change = now - self._last_mtime_check
-        log.debug("[HEALTH] uptime=%.1fs m3u8_mtime=%.3f last_mtime=%.3f since_change=%.1fs stall_timeout=%ds",
-                  uptime, current_mtime, self._last_m3u8_mtime, time_since_change, config.STALL_TIMEOUT)
 
-        if current_mtime == self._last_m3u8_mtime:
+        if current_mtime == self._last_seglist_mtime:
             if time_since_change >= config.STALL_TIMEOUT:
-                log.warning("[HEALTH] FFmpeg STALLED: m3u8 unchanged for %.1fs (mtime=%.3f, uptime=%.1fs)",
-                            time_since_change, current_mtime, uptime)
-                # Log stderr before killing
+                log.warning("[HEALTH] FFmpeg STALLED: m3u8 unchanged for %.1fs", time_since_change)
                 tail = self._stderr_lines[-5:] if self._stderr_lines else ["(no stderr)"]
                 log.warning("[HEALTH] stderr tail:\n  %s", "\n  ".join(tail))
                 _kill_process_tree(self._process)
@@ -262,13 +230,12 @@ class FFmpegRecorder(QObject):
                 self._running = False
                 self.state_changed.emit("error")
         else:
-            log.debug("[HEALTH] m3u8 updated: %.3f -> %.3f", self._last_m3u8_mtime, current_mtime)
-            self._last_m3u8_mtime = current_mtime
+            log.debug("[HEALTH] m3u8 updated: %.3f -> %.3f", self._last_seglist_mtime, current_mtime)
+            self._last_seglist_mtime = current_mtime
             self._last_mtime_check = now
 
 
 def _kill_process_tree(proc: subprocess.Popen):
-    """Kill a process and all its children on Windows."""
     if os.name == "nt":
         try:
             subprocess.run(

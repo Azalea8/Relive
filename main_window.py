@@ -8,6 +8,7 @@ from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -22,6 +23,7 @@ from PyQt6.QtWidgets import (
 from video_player import VideoPlayer
 from ffmpeg_recorder import FFmpegRecorder
 from cache_manager import CacheManager
+from core.danmaku import DanmakuCollector, DanmakuManager, AssWriter, danmaku_to_ass, export_clip_ass, render_with_fallback
 import stream_url
 from logger import get as _log
 import config
@@ -187,6 +189,29 @@ class _ExportWorker(QThread):
 
 
 # ---------------------------------------------------------------------------
+# Render worker — burn ASS danmaku into video via FFmpeg
+# ---------------------------------------------------------------------------
+
+class _RenderWorker(QThread):
+    """Burn ASS subtitles into exported video via FFmpeg subtitles filter."""
+    finished = pyqtSignal(str)  # output path
+    error = pyqtSignal(str)
+
+    def __init__(self, video_path: str, ass_path: str, output_path: str):
+        super().__init__()
+        self._video = video_path
+        self._ass = ass_path
+        self._output = output_path
+
+    def run(self):
+        ok = render_with_fallback(self._video, self._ass, self._output)
+        if ok:
+            self.finished.emit(self._output)
+        else:
+            self.error.emit("所有编码器均失败")
+
+
+# ---------------------------------------------------------------------------
 # Main Window
 # ---------------------------------------------------------------------------
 
@@ -294,6 +319,18 @@ QPushButton#btn_export:disabled {
     color: #565f89;
 }
 
+QPushButton#btn_danmaku {
+    background-color: #2f3140;
+    color: #a9b1d6;
+    border: 1px solid #3b3d54;
+    font-weight: 600;
+}
+QPushButton#btn_danmaku:checked {
+    background-color: #e0af68;
+    color: #1a1b26;
+    border: none;
+}
+
 QComboBox {
     background-color: #2f3140;
     color: #c0caf5;
@@ -361,7 +398,15 @@ class MainWindow(QMainWindow):
         self._dvr_frozen_duration = 0.0
         self._stream_worker: _StreamWorker | None = None
         self._export_worker: _ExportWorker | None = None
+        self._render_worker: _RenderWorker | None = None
+        self._exporting = False  # suppress status bar during export
         self._reconnect_count = 0
+
+        # Danmaku state
+        self._danmaku_enabled = True
+        self._danmaku_ass_path = ""
+        self._danmaku_live_start: float = 0.0
+        self._dvr_ass_path = ""
 
         # --- central widget ---
         central = QWidget()
@@ -465,6 +510,13 @@ class MainWindow(QMainWindow):
 
         ctrl_row.addStretch()
 
+        self._btn_danmaku = QPushButton("弹幕")
+        self._btn_danmaku.setObjectName("btn_danmaku")
+        self._btn_danmaku.setCheckable(True)
+        self._btn_danmaku.setChecked(True)
+        self._btn_danmaku.clicked.connect(self._on_danmaku_toggle)
+        ctrl_row.addWidget(self._btn_danmaku)
+
         self._btn_export = QPushButton("导出")
         self._btn_export.setObjectName("btn_export")
         self._btn_export.setEnabled(False)
@@ -481,6 +533,11 @@ class MainWindow(QMainWindow):
         self._recorder = FFmpegRecorder(self)
         self._cache = CacheManager(self)
 
+        # === Danmaku components ===
+        self._danmaku_collector = DanmakuCollector(self)
+        self._danmaku_manager = DanmakuManager(self)
+        self._ass_writer = AssWriter(width=1920, height=1080)
+
         # === Signals ===
         self._recorder.state_changed.connect(self._on_recorder_state)
 
@@ -491,6 +548,14 @@ class MainWindow(QMainWindow):
 
         self._slider.sliderPressed.connect(self._on_slider_pressed)
         self._slider.sliderReleased.connect(self._on_slider_released)
+
+        # Danmaku signals
+        self._danmaku_collector.message_received.connect(self._danmaku_manager.on_raw_message)
+        self._danmaku_manager.danmaku_added.connect(self._on_danmaku_live)
+
+        # Danmaku sub-reload timer (QTimer on main thread — mpv API is not thread-safe)
+        self._danmaku_reload_timer = QTimer(self)
+        self._danmaku_reload_timer.timeout.connect(self._player.sub_reload)
 
         log.info("ReLive ready")
 
@@ -542,11 +607,26 @@ class MainWindow(QMainWindow):
         log.info("[CONNECT] starting FFmpeg recorder...")
         self._recorder.start(url)
 
-        # Start mpv live preview
-        log.info("[CONNECT] starting mpv live preview...")
-        self._player.reinitialize(url)
+        # Prepare danmaku ASS before mpv init
+        os.makedirs(config.DANMAKU_DIR, exist_ok=True)
+        self._danmaku_manager.set_recording_start(self._recorder.start_time)
+        self._danmaku_ass_path = os.path.join(config.DANMAKU_DIR, "live.ass")
+        self._ass_writer = AssWriter(width=1920, height=1080)
+        self._ass_writer.open_live(self._danmaku_ass_path)
+        log.info("[CONNECT] ASS created: %s exists=%s",
+                 self._danmaku_ass_path, os.path.exists(self._danmaku_ass_path))
+
+        # Start mpv live preview with ASS subtitle
+        log.info("[CONNECT] starting mpv live preview with sub_file=%s", self._danmaku_ass_path)
+        self._player.reinitialize(url, sub_file=self._danmaku_ass_path)
         self._is_live_mode = True
+        self._danmaku_live_start = time.time()  # reset danmaku timing for new live playback
         log.info("[CONNECT] live mode active, recorder_running=%s", self._recorder.is_running())
+
+        # Start danmaku collection
+        self._danmaku_collector.start(self._room_id)
+        if self._danmaku_enabled:
+            self._danmaku_reload_timer.start(1000)
 
         self._btn_connect.setText("断开")
         self._btn_connect.setEnabled(True)
@@ -567,6 +647,8 @@ class MainWindow(QMainWindow):
         self._connected = False
         self._is_live_mode = True
         self._recorder.stop()
+        self._danmaku_collector.stop()
+        self._danmaku_manager.clear()
         self._btn_connect.setText("连接")
         self._status_label.setText("未连接")
         self._btn_live.setVisible(False)
@@ -587,6 +669,7 @@ class MainWindow(QMainWindow):
             except OSError as e:
                 log.warning("failed to clean cache: %s", e)
         os.makedirs(config.CACHE_DIR, exist_ok=True)
+        os.makedirs(config.SEGMENT_DIR, exist_ok=True)
 
     def _load_history(self):
         """Load room history from disk."""
@@ -711,7 +794,8 @@ class MainWindow(QMainWindow):
             self._slider.setValue(self._slider.maximum())
             self._slider.blockSignals(False)
         # DVR mode: slider range frozen at snapshot duration, don't update
-        self._statusbar.showMessage(f"缓存: {count} 段, {_fmt_time(total)}")
+        if not self._exporting:
+            self._statusbar.showMessage(f"缓存: {count} 段, {_fmt_time(total)}")
         self._btn_live.setVisible(self._connected and not self._is_live_mode)
 
     def _on_player_loaded(self):
@@ -734,7 +818,7 @@ class MainWindow(QMainWindow):
             self._slider.blockSignals(True)
             self._slider.setValue(self._slider.maximum())
             self._slider.blockSignals(False)
-            self._time_label.setText(f"缓存: {_fmt_time(total)}")
+            self._time_label.setText("")
         else:
             log.debug("[POS] DVR pos=%.3f slider=%d total=%.1f",
                       seconds, int(seconds * 100), total)
@@ -803,8 +887,22 @@ class MainWindow(QMainWindow):
             # Freeze slider range to snapshot duration
             self._dvr_frozen_duration = expected_dur
             self._slider.setRange(0, int(expected_dur * 100))
-            self._player.reinitialize(snapshot_path, start_pos=seek_to,
-                                      expected_duration=expected_dur)
+
+            # Generate DVR danmaku ASS
+            self._danmaku_reload_timer.stop()
+            self._dvr_ass_path = os.path.join(config.DANMAKU_DIR, "dvr.ass")
+            ndjson = self._danmaku_manager.ndjson_path
+            if ndjson and os.path.exists(ndjson):
+                danmaku_to_ass(
+                    ndjson, self._danmaku_manager.start_time * 1000,
+                    self._dvr_ass_path, width=1920, height=1080,
+                )
+                self._player.reinitialize(snapshot_path, start_pos=seek_to,
+                                          expected_duration=expected_dur)
+                self._player.set_sub_file(self._dvr_ass_path)
+            else:
+                self._player.reinitialize(snapshot_path, start_pos=seek_to,
+                                          expected_duration=expected_dur)
         else:
             # DVR→DVR: snapshot already loaded, just seek
             log.info("[SLIDER] DVR->DVR: seek to %.1fs", seek_to)
@@ -847,6 +945,7 @@ class MainWindow(QMainWindow):
         log.info("go live: URL refreshed, new mpv instance")
         self._stream_url = url
         self._is_live_mode = True
+        self._danmaku_live_start = time.time()  # reset timing so danmaku align with new mpv playback
         self._user_interacting_slider = False
         self._btn_live.setVisible(False)
         self._btn_live.setEnabled(True)
@@ -858,7 +957,16 @@ class MainWindow(QMainWindow):
         self._slider.blockSignals(True)
         self._slider.setValue(self._slider.maximum())
         self._slider.blockSignals(False)
-        self._player.reinitialize(url)
+
+        # Prepare live danmaku ASS before reinitialize (same order as initial connect)
+        self._danmaku_ass_path = os.path.join(config.DANMAKU_DIR, "live.ass")
+        self._ass_writer = AssWriter(width=1920, height=1080)
+        self._ass_writer.open_live(self._danmaku_ass_path)
+
+        self._player.reinitialize(url, sub_file=self._danmaku_ass_path)
+
+        if self._danmaku_enabled:
+            self._danmaku_reload_timer.start(1000)
 
     def _on_go_live_error(self, msg: str):
         self._btn_live.setText("回到直播")
@@ -866,6 +974,41 @@ class MainWindow(QMainWindow):
         log.error("go live: URL refresh error: %s", msg)
         self._status_label.setText(f"错误: {msg}")
         self._status_label.setStyleSheet("color: #f6447f; font-size: 12px;")
+
+    # ------------------------------------------------------------------
+    # Danmaku
+    # ------------------------------------------------------------------
+
+    def _on_danmaku_live(self, msg: dict):
+        msg_type = msg.get("msg_type", "unknown")
+        if not self._is_live_mode or not self._danmaku_enabled:
+            log.debug("[DANMAKU_LIVE] skip: is_live=%s enabled=%s type=%s",
+                      self._is_live_mode, self._danmaku_enabled, msg_type)
+            return
+        if msg_type != "chat":
+            log.debug("[DANMAKU_LIVE] skip non-chat: type=%s", msg_type)
+            return
+        # Use wall-clock time from most recent live playback start
+        # (resets on each go-live so timestamps align with mpv's new stream position)
+        elapsed = time.time() - self._danmaku_live_start
+        content = msg.get("content", "")
+        item = self._ass_writer.add(
+            time_s=elapsed,
+            text=content,
+            color=msg.get("color", "ffffff"),
+        )
+        if item:
+            self._ass_writer.append_to_file(item)
+            if len(self._ass_writer._items) <= 5:
+                log.info("[DANMAKU_LIVE] appended: elapsed=%.1f text=%s", elapsed, content[:30])
+        else:
+            log.debug("[DANMAKU_LIVE] collision-dropped: text=%s", content[:30])
+
+    def _on_danmaku_toggle(self):
+        self._danmaku_enabled = self._btn_danmaku.isChecked()
+        if self._player._player:
+            self._player._player.sub_visibility = self._danmaku_enabled
+        log.info("[DANMAKU] toggle: enabled=%s", self._danmaku_enabled)
 
     def _on_play_pause(self):
         if self._btn_play_pause.isChecked():
@@ -926,26 +1069,95 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "导出", "所选范围内无片段")
             return
 
-        # Output path
-        os.makedirs(config.EXPORT_DIR, exist_ok=True)
+        # Ask for folder name
+        default_name = time.strftime("%Y%m%d_%H%M%S")
+        name, ok = QInputDialog.getText(
+            self, "导出片段", "导出文件夹名称:",
+            text=default_name,
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        # Create export folder
+        self._export_folder = os.path.join(config.EXPORT_DIR, name)
+        os.makedirs(self._export_folder, exist_ok=True)
+
         ts = time.strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(config.EXPORT_DIR, f"relive_{ts}.mp4")
+        self._export_base = os.path.join(self._export_folder, f"relive_{ts}")
+        output_path = self._export_base + ".mp4"
 
         self._btn_export.setEnabled(False)
+        self._exporting = True
+        self._status(f"导出中 → {name}/")
+
         self._export_worker = _ExportWorker(segs_in_range, output_path)
         self._export_worker.finished.connect(self._on_export_done)
         self._export_worker.error.connect(self._on_export_error)
         self._export_worker.start()
 
+    def _status(self, msg: str):
+        folder = getattr(self, '_export_folder', '')
+        if folder:
+            name = os.path.basename(folder)
+            self._statusbar.showMessage(f"{msg} → {name}/")
+        else:
+            self._statusbar.showMessage(msg)
+
+    def _finish_export(self):
+        """Clear export state, marks, and restore status bar."""
+        self._exporting = False
+        self._mark_in_sec = None
+        self._mark_out_sec = None
+        self._update_mark_label()
+        self._slider.set_mark_in_line(None)
+        self._slider.set_mark_out_line(None)
+        self._update_export_button()
+        total = self._cache.total_duration()
+        count = len(self._cache.segments)
+        self._statusbar.showMessage(f"缓存: {count} 段, {_fmt_time(total)}")
+
     def _on_export_done(self, path: str):
-        self._btn_export.setEnabled(True)
-        self._statusbar.showMessage(f"已导出: {path}")
-        log.info("export done: %s", path)
+        log.info("video export done: %s", path)
+
+        ndjson = self._danmaku_manager.ndjson_path
+        if ndjson and os.path.exists(ndjson):
+            ass_path = self._export_base + ".ass"
+            self._status("生成弹幕字幕")
+            count = export_clip_ass(
+                ndjson, self._danmaku_manager.start_time * 1000,
+                self._mark_in_sec, self._mark_out_sec, ass_path,
+            )
+            log.info("clip ASS generated: %d danmaku -> %s", count, ass_path)
+
+            dm_path = self._export_base + "_dm.mp4"
+            self._status("渲染弹幕")
+            self._render_worker = _RenderWorker(path, ass_path, dm_path)
+            self._render_worker.finished.connect(self._on_render_done)
+            self._render_worker.error.connect(self._on_render_error)
+            self._render_worker.start()
+        else:
+            self._btn_export.setEnabled(True)
+            self._status("已导出")
+            self._finish_export()
 
     def _on_export_error(self, msg: str):
         self._btn_export.setEnabled(True)
-        self._statusbar.showMessage(f"导出失败: {msg}")
+        self._status(f"导出失败: {msg}")
         log.error("export error: %s", msg)
+        self._finish_export()
+
+    def _on_render_done(self, path: str):
+        self._btn_export.setEnabled(True)
+        self._status("已导出（含弹幕）")
+        log.info("render done: %s", path)
+        self._finish_export()
+
+    def _on_render_error(self, msg: str):
+        self._btn_export.setEnabled(True)
+        self._status("已导出（弹幕渲染失败）")
+        log.error("render error: %s", msg)
+        self._finish_export()
 
     # ------------------------------------------------------------------
     # Events
@@ -964,6 +1176,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         log.info("shutting down")
+        self._danmaku_collector.stop()
+        self._danmaku_manager.clear()
+        self._danmaku_reload_timer.stop()
         self._recorder.stop()
         self._player.close()
         super().closeEvent(event)
