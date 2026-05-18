@@ -1,6 +1,7 @@
 """Cache manager — reads FFmpeg's HLS m3u8 to track segments for DVR."""
 import os
 import tempfile
+import time
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from src.logger import get as _log
@@ -11,27 +12,18 @@ log = _log("cache")
 SNAPSHOT_M3U8 = os.path.join(config.SEGMENT_DIR, "snapshot.m3u8")
 
 
-class Segment:
-    __slots__ = ("filename", "path", "index", "duration")
-
-    def __init__(self, filename: str, path: str, index: int, duration: float):
-        self.filename = filename
-        self.path = path
-        self.index = index
-        self.duration = duration
-
-
 class CacheManager(QObject):
-    """Reads FFmpeg's live HLS m3u8, tracks segments, generates VOD snapshot."""
+    """Tracks segment count / total duration / time bounds from FFmpeg's HLS m3u8."""
 
     segments_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.segments: list[Segment] = []
-        self._last_segment_count = -1
-        self._last_m3u8_size: int = 0
+        self._count: int = 0
         self._cached_total: float = 0.0
+        self._first_ts: str = ""
+        self._last_ts: str = ""
+        self._last_cleanup: float = 0.0
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._scan)
@@ -40,47 +32,81 @@ class CacheManager(QObject):
     def total_duration(self) -> float:
         return self._cached_total
 
-    def find_segment_at(self, offset_sec: float) -> tuple[int, float] | None:
-        elapsed = 0.0
-        for i, seg in enumerate(self.segments):
-            if elapsed + seg.duration > offset_sec:
-                return (i, offset_sec - elapsed)
-            elapsed += seg.duration
-        return None
+    @property
+    def segment_count(self) -> int:
+        return self._count
 
-    def get_absolute_time(self, segment_index: int, offset_in_segment: float) -> float:
-        total = 0.0
-        for i, seg in enumerate(self.segments):
-            if i == segment_index:
-                return total + offset_in_segment
-            total += seg.duration
-        return total
+    @property
+    def first_ts(self) -> str:
+        return self._first_ts
+
+    @property
+    def last_ts(self) -> str:
+        return self._last_ts
+
+    def get_paths_in_range(self, start_sec: float, end_sec: float) -> list[str]:
+        """Return absolute paths of TS files overlapping [start_sec, end_sec).
+        Parses the m3u8 on demand — only called during export, not on the hot path."""
+        m3u8_path = config.M3U8_PATH
+        if not os.path.exists(m3u8_path):
+            return []
+        try:
+            with open(m3u8_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return []
+
+        paths: list[str] = []
+        elapsed = 0.0
+        current_dur = 0.0
+        for line in lines:
+            line = line.strip()
+            if line.startswith("#EXTINF:"):
+                try:
+                    current_dur = float(line[8:].rstrip(","))
+                except ValueError:
+                    current_dur = float(config.SEGMENT_SEC)
+            elif line and not line.startswith("#"):
+                seg_end = elapsed + current_dur
+                if seg_end > start_sec and elapsed < end_sec:
+                    path = os.path.normpath(os.path.join(config.SEGMENT_DIR, line))
+                    paths.append(path)
+                elapsed = seg_end
+                current_dur = 0.0
+        return paths
 
     def write_snapshot(self) -> tuple[str, float]:
-        """Generate a frozen VOD m3u8 from current segment list."""
-        segs = self.segments
-        if not segs:
+        """Clone FFmpeg's live m3u8 into a VOD snapshot with #EXT-X-ENDLIST."""
+        m3u8_path = config.M3U8_PATH
+        if not os.path.exists(m3u8_path):
             return "", 0.0
 
-        max_dur = max(s.duration for s in segs)
-        target_dur = max(int(max_dur) + 1, 1)
+        try:
+            with open(m3u8_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return "", 0.0
 
-        lines = [
-            "#EXTM3U\n",
-            "#EXT-X-VERSION:3\n",
-            f"#EXT-X-TARGETDURATION:{target_dur}\n",
-            "#EXT-X-MEDIA-SEQUENCE:0\n",
-            "#EXT-X-PLAYLIST-TYPE:VOD\n",
-        ]
-        for seg in segs:
-            lines.append(f"#EXTINF:{seg.duration:.6f},\n")
-            lines.append(f"{seg.filename}\n")
-        lines.append("#EXT-X-ENDLIST\n")
+        if not content.strip():
+            return "", 0.0
+
+        lines = content.rstrip().split("\n")
+        out: list[str] = []
+        version_seen = False
+        for line in lines:
+            stripped = line.strip()
+            out.append(stripped)
+            if not version_seen and stripped.startswith("#EXT-X-VERSION:"):
+                out.append("#EXT-X-PLAYLIST-TYPE:VOD")
+                version_seen = True
+
+        out = [l for l in out if l != "#EXT-X-ENDLIST"]
+        out.append("#EXT-X-ENDLIST")
 
         fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=config.SEGMENT_DIR)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.writelines(lines)
+                f.write("\n".join(out))
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, SNAPSHOT_M3U8)
@@ -92,30 +118,20 @@ class CacheManager(QObject):
                 pass
             return "", 0.0
 
-        total = self._cached_total
-        log.info("[SNAPSHOT] wrote %d segments, %.1fs", len(segs), total)
-        return SNAPSHOT_M3U8, total
+        log.info("[SNAPSHOT] wrote %d segments, %.1fs", self._count, self._cached_total)
+        return SNAPSHOT_M3U8, self._cached_total
 
     def _scan(self):
         try:
-            self._parse_m3u8()
+            self._scan_m3u8()
         except Exception as e:
             log.error("[SCAN] error: %s", e)
 
-    def _parse_m3u8(self):
-        """Parse FFmpeg's live HLS m3u8 for segment list."""
+    def _scan_m3u8(self):
+        """Extract segment count / total duration / time bounds from m3u8."""
         m3u8_path = config.M3U8_PATH
         if not os.path.exists(m3u8_path):
             return
-
-        # Fast-path: skip if file size unchanged
-        try:
-            size = os.path.getsize(m3u8_path)
-        except OSError:
-            return
-        if size == self._last_m3u8_size:
-            return
-        self._last_m3u8_size = size
 
         try:
             with open(m3u8_path, "r", encoding="utf-8") as f:
@@ -123,9 +139,11 @@ class CacheManager(QObject):
         except OSError:
             return
 
-        segments: list[Segment] = []
+        count = 0
+        total = 0.0
+        first_ts = ""
+        last_ts = ""
         current_dur = 0.0
-        seg_index = 0
 
         for line in lines:
             line = line.strip()
@@ -135,29 +153,48 @@ class CacheManager(QObject):
                 except ValueError:
                     current_dur = float(config.SEGMENT_SEC)
             elif line and not line.startswith("#"):
-                # Segment URI — relative to m3u8 in videos/
-                filename = line
-                path = os.path.normpath(os.path.join(config.SEGMENT_DIR, filename))
-                segments.append(Segment(
-                    filename=filename,
-                    path=path,
-                    index=seg_index,
-                    duration=current_dur,
-                ))
-                seg_index += 1
+                if not first_ts:
+                    first_ts = line
+                last_ts = line
+                total += current_dur
+                count += 1
                 current_dur = 0.0
 
-        # Skip if nothing changed
-        if len(segments) == len(self.segments):
-            if all(
-                s1.filename == s2.filename and s1.duration == s2.duration
-                for s1, s2 in zip(segments, self.segments)
-            ):
-                return
+        if count == 0:
+            return
 
-        self._cached_total = sum(s.duration for s in segments)
-        self.segments = segments
-        if len(self.segments) != self._last_segment_count:
-            self._last_segment_count = len(self.segments)
-        log.info("[SCAN] %d segments, total=%.1fs", len(segments), self._cached_total)
-        self.segments_changed.emit()
+        changed = (count != self._count
+                   or abs(total - self._cached_total) > 0.5
+                   or first_ts != self._first_ts)
+
+        self._count = count
+        self._cached_total = total
+        self._first_ts = first_ts
+        self._last_ts = last_ts
+
+        # Delete TS files older than the playlist window
+        now = time.time()
+        if now - self._last_cleanup >= config.TS_CLEANUP_HOURS * 3600 and first_ts:
+            orphaned: list[str] = []
+            try:
+                for f in sorted(os.listdir(config.SEGMENT_DIR)):
+                    if not f.endswith('.ts'):
+                        continue
+                    if f >= first_ts:
+                        break
+                    try:
+                        os.remove(os.path.join(config.SEGMENT_DIR, f))
+                        orphaned.append(f)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            if orphaned:
+                msg = f"[CLEANUP] removed {len(orphaned)} orphan TS: {orphaned[0]} .. {orphaned[-1]}"
+                log.info(msg)
+                print(msg)
+            self._last_cleanup = now
+
+        if changed:
+            log.info("[SCAN] %d segments, total=%.1fs", count, total)
+            self.segments_changed.emit()

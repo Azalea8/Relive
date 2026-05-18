@@ -6,11 +6,14 @@ from pathlib import Path
 # Segment duration in seconds
 SEGMENT_SEC = 4
 
-# Maximum cache duration in hours
+# Maximum cache duration in hours (0 means no limit)
 CACHE_HOURS = 2
 
 # Cache check interval (ms) — for segment list updates
 CACHE_CHECK_MS = 3000
+
+# Orphan TS cleanup interval — delete files not in playlist every N hours
+TS_CLEANUP_HOURS = 3
 
 # mpv position poll interval (ms)
 MPV_POLL_MS = 33

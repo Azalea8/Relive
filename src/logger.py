@@ -10,7 +10,7 @@ import sys
 if getattr(sys, "frozen", False):
     _BASE = os.path.dirname(sys.executable)
 else:
-    _BASE = os.path.dirname(os.path.abspath(__file__))
+    _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOG_FILE = os.path.join(_BASE, "ReLive.log")
 
 _INFO     = 1

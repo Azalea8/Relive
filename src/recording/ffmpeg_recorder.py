@@ -67,7 +67,7 @@ class FFmpegRecorder(QObject):
             "-hls_time", str(config.SEGMENT_SEC),
             "-hls_segment_type", "mpegts",
             "-hls_flags", "append_list",
-            "-hls_list_size", "0",
+            "-hls_list_size", str((config.CACHE_HOURS * 3600) // config.SEGMENT_SEC),
             "-strftime", "1",
             "-hls_segment_filename", output_pattern,
             config.M3U8_PATH,

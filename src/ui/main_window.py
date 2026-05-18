@@ -285,13 +285,18 @@ class MainWindow(QMainWindow):
 
         # Time label
         time_row = QHBoxLayout()
-        self._time_label = QLabel("00:00 / 00:00")
+        self._time_label = QLabel("")
         self._time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         time_row.addWidget(self._time_label)
         self._delay_label = QLabel("")
         self._delay_label.setStyleSheet("color: #f6447f; font-size: 12px;")
-        self._delay_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._delay_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         time_row.addWidget(self._delay_label)
+        time_row.addStretch()
+        self._stream_time_label = QLabel("")
+        self._stream_time_label.setStyleSheet("color: #9aa5ce; font-size: 12px;")
+        self._stream_time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        time_row.addWidget(self._stream_time_label)
         layout.addLayout(time_row)
 
         # === Controls ===
@@ -397,10 +402,8 @@ class MainWindow(QMainWindow):
 
         # Clear stale cache from previous session before reconnecting
         self._clean_cache()
-        self._cache.segments.clear()
         self._cache._cached_total = 0.0
         self._cache._last_segment_count = -1
-        self._cache._last_m3u8_size = 0
         self._slider.setRange(0, 0)
 
         self._room_id = room_id
@@ -456,6 +459,7 @@ class MainWindow(QMainWindow):
         self._btn_connect.setText("断开")
         self._btn_connect.setEnabled(True)
         self._save_history(self._room_id)
+        self._time_label.setText("")
         self._delay_label.setText("直播")
         self._delay_label.setStyleSheet("color: #10b981; font-size: 12px;")
         self._status_label.setText("直播中")
@@ -477,6 +481,8 @@ class MainWindow(QMainWindow):
         self._danmaku_manager.clear()
         self._ass_writer.close()
         self._player.close()
+        self._time_label.setText("")
+        self._stream_time_label.setText("")
         self._btn_connect.setText("连接")
         self._status_label.setText("未连接")
         self._btn_live.setVisible(False)
@@ -614,7 +620,7 @@ class MainWindow(QMainWindow):
     def _on_segments_changed(self):
         self._danmaku_manager.periodic_flush()
         total = self._cache.total_duration()
-        count = len(self._cache.segments)
+        count = self._cache.segment_count
         log.info("[CACHE] segments_changed: count=%d total=%.1fs range=[%.1f ~ %.1f]",
                  count, total, 0, total)
         if self._is_live_mode:
@@ -622,9 +628,12 @@ class MainWindow(QMainWindow):
             self._slider.blockSignals(True)
             self._slider.setValue(self._slider.maximum())
             self._slider.blockSignals(False)
-        # DVR mode: slider range frozen at snapshot duration, don't update
+        # Segment wall-clock time bounds
+        if self._cache.last_ts:
+            ts = self._cache.last_ts.split("_")[1][:6]
+            self._stream_time_label.setText(f"{ts[:2]}:{ts[2:4]}:{ts[4:6]}")
         if not self._exporting:
-            self._statusbar.showMessage(f"缓存: {count} 段, {_fmt_time(total)}")
+            self._statusbar.showMessage(f"缓存: {count} 段 | 总时长: {_fmt_time(total)}")
         self._btn_live.setVisible(self._connected and not self._is_live_mode)
 
     def _on_player_loaded(self):
@@ -654,7 +663,22 @@ class MainWindow(QMainWindow):
             self._slider.blockSignals(True)
             self._slider.setValue(int(seconds * 100))
             self._slider.blockSignals(False)
-            self._time_label.setText(f"回看 {_fmt_time(seconds)} / {_fmt_time(self._dvr_frozen_duration)} · 直播 {_fmt_time(total)}")
+            # Show real clock time from segment timestamps
+            t_dvr = self._wall_clock_at(seconds)
+            t_end = self._wall_clock_at(self._dvr_frozen_duration)
+            self._time_label.setText("")
+            self._time_label.setText(f"回看 {t_dvr} / {t_end}")
+
+    def _wall_clock_at(self, offset: float) -> str:
+        """Convert a recording-relative offset to wall-clock HH:MM:SS."""
+        first = self._cache.first_ts
+        if not first:
+            return "--:--:--"
+        base = first.split("_")[1]
+        h, m, s = int(base[0:2]), int(base[2:4]), int(base[4:6])
+        t = h * 3600 + m * 60 + s + int(offset)
+        t %= 86400
+        return f"{t // 3600:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
 
     # ------------------------------------------------------------------
     # Slider (seek)
@@ -691,17 +715,9 @@ class MainWindow(QMainWindow):
             self._on_go_live()
             return
 
-        # Find which segment to seek to
-        result = self._cache.find_segment_at(target_sec)
-        if result is None:
-            log.warning("[SLIDER] find_segment_at(%.1f) returned None", target_sec)
-            return
-
-        seg_idx, offset_in_seg = result
-        abs_offset = self._cache.get_absolute_time(seg_idx, 0)
-        seek_to = abs_offset + offset_in_seg
-        log.info("[SLIDER] DVR seek: seg_idx=%d offset=%.1fs abs_offset=%.1fs seek_to=%.1fs",
-                 seg_idx, offset_in_seg, abs_offset, seek_to)
+        # mpv's HLS demuxer handles segment-level seek — just pass target time
+        seek_to = target_sec
+        log.info("[SLIDER] DVR seek: seek_to=%.1fs", seek_to)
 
         if self._is_live_mode:
             # LIVE→DVR: first time entering replay, create snapshot + load
@@ -779,6 +795,7 @@ class MainWindow(QMainWindow):
         self._btn_live.setVisible(False)
         self._btn_live.setEnabled(True)
         self._btn_live.setText("回到直播")
+        self._time_label.setText("")
         self._delay_label.setText("直播")
         self._delay_label.setStyleSheet("color: #10b981; font-size: 12px;")
         total = self._cache.total_duration()
@@ -871,7 +888,7 @@ class MainWindow(QMainWindow):
     def _update_export_button(self):
         can_export = (self._mark_in_sec is not None and self._mark_out_sec is not None
                       and self._mark_out_sec > self._mark_in_sec
-                      and len(self._cache.segments) > 0)
+                      and self._cache.segment_count > 0)
         self._btn_export.setEnabled(can_export)
 
     # ------------------------------------------------------------------
@@ -885,14 +902,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "导出", "出点必须在入点之后")
             return
 
-        # Find segments in range
-        segs_in_range = []
-        elapsed = 0.0
-        for seg in self._cache.segments:
-            seg_end = elapsed + seg.duration
-            if seg_end > self._mark_in_sec and elapsed < self._mark_out_sec:
-                segs_in_range.append(seg.path)
-            elapsed = seg_end
+        # Find segments in range (parses m3u8 on demand)
+        segs_in_range = self._cache.get_paths_in_range(
+            self._mark_in_sec, self._mark_out_sec)
 
         if not segs_in_range:
             QMessageBox.warning(self, "导出", "所选范围内无片段")
@@ -943,8 +955,8 @@ class MainWindow(QMainWindow):
         self._slider.set_mark_out_line(None)
         self._update_export_button()
         total = self._cache.total_duration()
-        count = len(self._cache.segments)
-        self._statusbar.showMessage(f"缓存: {count} 段, {_fmt_time(total)}")
+        count = self._cache.segment_count
+        self._statusbar.showMessage(f"缓存: {count} 段 | 总时长: {_fmt_time(total)}")
 
     def _on_export_done(self, path: str):
         log.info("video export done: %s", path)
