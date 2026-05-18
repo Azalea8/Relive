@@ -6,13 +6,7 @@
 
 ## 解决方案：冻结快照
 
-进入 DVR 模式时，从 FFmpeg 维护的直播 m3u8 生成一个**静态 VOD 播放列表**：
-
-1. 读取 `cache/videos/playlist.m3u8`（FFmpeg 实时维护）
-2. 添加 `#EXT-X-PLAYLIST-TYPE:VOD` 标签
-3. 移除已有的 `#EXT-X-ENDLIST`（如有）
-4. 追加 `#EXT-X-ENDLIST`
-5. 写入 `cache/videos/snapshot.m3u8`
+进入 DVR 模式时，从内存 segment 列表生成一个**静态 VOD 播放列表**（不读磁盘）：
 
 ```m3u8
 #EXTM3U
@@ -29,18 +23,20 @@
 ```
 
 关键设计：
-- snapshot 与 segment 文件在同一目录（`cache/videos/`），路径一致
+- snapshot 与 segment 文件在同一目录（`cache/videos/`），裸文件名直接解析
 - `#EXT-X-PLAYLIST-TYPE:VOD` — mpv 当完整视频处理
 - `#EXT-X-ENDLIST` — 播放列表结束，mpv 不会请求新 segment
+- 快照从 `self.segments` 内存数据构建，不重复读取 m3u8 文件
 
-## HLS 断线保护
+## HLS 断线保护 + 2h 滑动窗口
 
-FFmpeg 使用 `-f hls -hls_flags append_list -hls_list_size 0`：
+FFmpeg 使用 `-f hls -hls_flags append_list+delete_segments -hls_list_size 1800`：
 
 | 参数 | 作用 |
 |------|------|
 | `-hls_flags append_list` | 重连时**追加**到已有 m3u8，不截断 |
-| `-hls_list_size 0` | 保留全部分段（最多 2 小时） |
+| `-hls_list_size 1800` | 保留最近 1800 段（≈ 2 小时滑动窗口） |
+| `-hls_flags delete_segments` | 超出窗口的旧 TS 文件由 FFmpeg 自动删除 |
 | `-hls_time 4` | 每 4 秒一个分段 |
 
 重连流程：
@@ -50,6 +46,10 @@ FFmpeg #1 crashed → 旧 m3u8: [seg1, seg2, seg3]
 FFmpeg #2 started (append_list)
   ↓
 m3u8: [seg1, seg2, seg3, seg4, seg5, ...]  ← 历史分段不丢失
+
+... 达到 1800 段后 ...
+  ↓
+FFmpeg 自动删除最旧 segment，维持 1800 段滑动窗口
 ```
 
 ## 状态机
@@ -65,10 +65,10 @@ m3u8: [seg1, seg2, seg3, seg4, seg5, ...]  ← 历史分段不丢失
 
 ### LIVE→DVR（首次进入回看）
 
-1. `CacheManager.write_snapshot()` 从当前 m3u8 生成 `snapshot.m3u8`
+1. `CacheManager.write_snapshot()` 从内存 segment 列表构建 `snapshot.m3u8`
 2. 锁定 slider range 为 snapshot 总时长（`_dvr_frozen_duration`）
 3. 停止弹幕 reload timer
-4. `danmaku_to_ass(ndjson)` 生成 DVR 弹幕 ASS
+4. `danmaku_to_ass(ndjson)` 从 NDJSON 文件生成 DVR 弹幕 ASS
 5. `VideoPlayer.reinitialize(snapshot, seek_to)` 加载快照 + 跳转
 6. `VideoPlayer.set_sub_file(dvr.ass)` 加载回看弹幕
 
@@ -82,7 +82,7 @@ m3u8: [seg1, seg2, seg3, seg4, seg5, ...]  ← 历史分段不丢失
 
 1. 获取新直播流 URL（token 过期需刷新）
 2. `_danmaku_live_start = time.time()` — 重置弹幕时间基准
-3. `AssWriter.open_live(live.ass)` — 写入空白 ASS header
+3. `AssWriter.open_live(live.ass)` — 行缓冲模式写入 ASS header
 4. `VideoPlayer.reinitialize(url, sub_file=live.ass)` — 加载字幕后播放
 5. 启动弹幕 reload timer（每秒 sub-reload）
 6. 恢复 slider range 为实时缓存总时长，slider 自动跟踪末端
@@ -104,10 +104,25 @@ ready = dur >= threshold or stable_count >= 3
 snapshot.m3u8 使用原子写入避免损坏：
 
 ```python
-fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=CACHE_DIR)
+fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=SEGMENT_DIR)
 with os.fdopen(fd, "w") as f:
     f.writelines(lines)
     f.flush()
     os.fsync(f.fileno())
 os.replace(tmp, SNAPSHOT_M3U8)  # 原子替换
+```
+
+## 弹幕时间线
+
+两条独立时间基准：
+
+| 基准 | 来源 | 重置时机 |
+|------|------|----------|
+| `start_time` (NDJSON) | 录制起点 wall clock | 从不 |
+| `_danmaku_live_start` (ASS) | 直播播放起点 | 每次 LIVE/DVR→LIVE |
+
+DVR ASS 从 NDJSON 文件生成，不做内存缓存：
+```python
+time_s = (timestamp_ms - start_time_ms) / 1000
+out_time = time_s - mark_in_sec + time_offset
 ```

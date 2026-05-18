@@ -11,7 +11,7 @@
 - **直播预览** — mpv 实时播放直播流，附带滚动弹幕
 - **弹幕采集** — Node.js 连接斗鱼弹幕 WebSocket，实时采集展示，录制为 NDJSON
 - **DVR 时移回看** — 最多 2 小时缓存，拖动进度条回看任意时间点，附带对应时间段弹幕
-- **冻结快照** — 回看模式下从 FFmpeg 的 HLS m3u8 生成 VOD 快照，内部 seek 不重建
+- **冻结快照** — 回看模式下从内存 segment 列表生成 VOD 快照，内部 seek 不重建
 - **片段导出** — 设置入点/出点，弹出命名对话框，导出 MP4 + 弹幕到指定文件夹
 - **自动重连** — FFmpeg 录制中断后自动获取新 URL，使用 `append_list` 保留已有分段
 - **暗色主题** — 中文 UI，斗鱼风格配色
@@ -25,31 +25,33 @@
 └─────────────┘     └──────────────┘     └──────┬──────┘
                                                 │
 ┌─────────────┐     ┌──────────────┐     ┌──────▼──────┐
-│ main_window  │────▶│ video_player  │◀────│cache_manager│
+│  main_window │────▶│ video_player  │◀────│cache_manager│
 │  (PyQt6 GUI) │     │   (mpv)      │     │ (m3u8解析)  │
 └──────┬──────┘     └──────────────┘     └─────────────┘
        │
 ┌──────▼──────┐     ┌──────────────┐
-│danmaku_collector│──▶│danmaku_manager│
-│ (Node.js子进程) │     │ (NDJSON+ASS) │
+│   collector  │────▶│   manager    │
+│ (Node.js子进程)│     │ (NDJSON+ASS) │
 └─────────────┘     └──────────────┘
 ```
 
 | 模块 | 职责 |
 |------|------|
-| `stream_url.py` | 斗鱼直播流 URL 获取，MD5 签名认证 |
-| `ffmpeg_recorder.py` | FFmpeg 子进程管理，`-f hls + append_list` 录制，健康检查 |
-| `cache_manager.py` | 解析 FFmpeg 的 HLS m3u8，跟踪分段，生成 VOD 快照 |
-| `video_player.py` | mpv 封装，嵌入 PyQt6 窗口，seek/播放控制 |
-| `main_window.py` | 主窗口 GUI，DVR 逻辑，导出功能，弹幕协调 |
-| `config.py` | 全局配置常量 |
-| `logger.py` | 日志系统 |
-| `core/danmaku/douyu_worker.js` | Node.js 弹幕采集，连接斗鱼 WebSocket |
-| `core/danmaku/danmaku_collector.py` | 管理 Node.js 子进程，解析 stdout JSON |
-| `core/danmaku/danmaku_manager.py` | 弹幕数据管理，NDJSON 持久化，时间范围查询 |
-| `core/danmaku/ass_writer.py` | ASS 字幕生成，弹幕飘动碰撞检测 |
-| `core/danmaku/ass_exporter.py` | 切片弹幕 ASS 导出 |
-| `core/danmaku/dm_renderer.py` | FFmpeg 弹幕渲染到视频 |
+| `src/recording/stream_url.py` | 斗鱼直播流 URL 获取，MD5 签名认证 |
+| `src/recording/ffmpeg_recorder.py` | FFmpeg 子进程，`-f hls + append_list + delete_segments` 录制，健康检查 |
+| `src/playback/cache_manager.py` | 解析 FFmpeg 的 HLS m3u8，跟踪分段，从内存生成 VOD 快照 |
+| `src/playback/video_player.py` | mpv 封装，嵌入 PyQt6 窗口，seek/播放控制 |
+| `src/ui/main_window.py` | 主窗口 GUI，DVR 逻辑，导出功能，弹幕协调 |
+| `src/ui/slider.py` | 自定义进度条，点击跳转 + 入出点标记线 |
+| `src/ui/workers.py` | 后台线程：流 URL 获取、FFmpeg 导出、弹幕渲染 |
+| `src/config.py` | 全局配置常量 |
+| `src/logger.py` | 日志系统 |
+| `src/danmaku/douyu_worker.js` | Node.js 弹幕采集，连接斗鱼 WebSocket |
+| `src/danmaku/collector.py` | 管理 Node.js 子进程，解析 stdout JSON |
+| `src/danmaku/manager.py` | 弹幕数据管理，NDJSON 持久化 |
+| `src/danmaku/ass_writer.py` | ASS 字幕生成，弹幕飘动碰撞检测 |
+| `src/danmaku/ass_exporter.py` | 切片弹幕 ASS 导出 |
+| `src/danmaku/renderer.py` | FFmpeg 弹幕渲染到视频 |
 
 ## 环境要求
 
@@ -86,28 +88,33 @@ uv run python main.py
 
 ```
 ReLive/
-├── main.py              # 入口
-├── config.py            # 配置常量
-├── logger.py            # 日志系统
-├── stream_url.py        # 斗鱼流 URL 解析
-├── ffmpeg_recorder.py   # FFmpeg HLS 录制
-├── cache_manager.py     # m3u8 解析 + 快照生成
-├── video_player.py      # mpv 播放器封装
-├── main_window.py       # 主窗口 + DVR + 导出 + 弹幕协调
-├── core/
-│   └── danmaku/
-│       ├── douyu_worker.js      # 弹幕采集 Node.js 进程
-│       ├── danmaku_collector.py # Node 子进程管理
-│       ├── danmaku_manager.py   # 弹幕数据 + NDJSON
-│       ├── ass_writer.py        # ASS 字幕生成
-│       ├── ass_exporter.py      # 切片 ASS 导出
-│       └── dm_renderer.py       # FFmpeg 弹幕渲染
+├── main.py                        # 入口
+├── src/                           # Python 包
+│   ├── config.py                  # 配置常量
+│   ├── logger.py                  # 日志系统
+│   ├── recording/                 # 录制层
+│   │   ├── stream_url.py          # 斗鱼流 URL 解析
+│   │   └── ffmpeg_recorder.py     # FFmpeg HLS 录制
+│   ├── playback/                  # 播放 + 缓存层
+│   │   ├── video_player.py        # mpv 播放器封装
+│   │   └── cache_manager.py       # m3u8 解析 + 快照生成
+│   ├── danmaku/                   # 弹幕层
+│   │   ├── douyu_worker.js        # Node.js 弹幕采集
+│   │   ├── collector.py           # Node 子进程管理
+│   │   ├── manager.py             # 弹幕数据 + NDJSON
+│   │   ├── ass_writer.py          # ASS 字幕生成
+│   │   ├── ass_exporter.py        # 切片 ASS 导出
+│   │   └── renderer.py            # FFmpeg 弹幕渲染
+│   └── ui/                        # UI 层
+│       ├── main_window.py         # 主窗口
+│       ├── slider.py              # 自定义进度条
+│       └── workers.py             # 后台工作线程
 ├── bin/
-│   └── libmpv-2.dll     # mpv 动态库
-├── docs/                # 开发文档
-│   ├── architecture.md  # 架构设计
-│   ├── dvr-design.md    # DVR 回放设计
-│   └── performance.md   # 性能审计报告
-├── pyproject.toml       # Python 项目配置
-└── package.json         # Node.js 依赖
+│   └── libmpv-2.dll               # mpv 动态库
+├── docs/                          # 开发文档
+│   ├── architecture.md            # 架构设计
+│   ├── dvr-design.md              # DVR 回放设计
+│   └── performance.md             # 性能审计报告
+├── pyproject.toml                 # Python 项目配置
+└── package.json                   # Node.js 依赖
 ```

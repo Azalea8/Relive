@@ -1,5 +1,7 @@
 """ReLive configuration constants."""
 import os
+import sys
+from pathlib import Path
 
 # Segment duration in seconds
 SEGMENT_SEC = 4
@@ -23,10 +25,10 @@ RECONNECT_WAIT = 5
 MAX_RECONNECT = 10
 
 # Directories
-if getattr(__import__("sys"), "frozen", False):
-    _BASE = os.path.dirname(__import__("sys").executable)
+if getattr(sys, "frozen", False):
+    _BASE = os.path.dirname(sys.executable)
 else:
-    _BASE = os.path.dirname(os.path.abspath(__file__))
+    _BASE = str(Path(__file__).resolve().parent.parent)
 
 CACHE_DIR = os.path.join(_BASE, "cache")
 SEGMENT_DIR = os.path.join(CACHE_DIR, "videos")

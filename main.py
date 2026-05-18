@@ -7,11 +7,11 @@ os.environ["PATH"] = _project_dir + os.pathsep + os.path.join(_project_dir, "bin
 
 from PyQt6.QtGui import QIcon             # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
-from main_window import MainWindow        # noqa: E402
+from src.ui.main_window import MainWindow  # noqa: E402
 
 
 def main():
-    from logger import get as _log
+    from src.logger import get as _log
     log = _log("app")
     log.info("=== ReLive starting ===")
 
