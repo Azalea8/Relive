@@ -391,9 +391,17 @@ class MainWindow(QMainWindow):
         if not room_id:
             return
 
-        if self._recorder.is_running():
+        if self._connected:
             self._disconnect()
             return
+
+        # Clear stale cache from previous session before reconnecting
+        self._clean_cache()
+        self._cache.segments.clear()
+        self._cache._cached_total = 0.0
+        self._cache._last_segment_count = -1
+        self._cache._last_m3u8_size = 0
+        self._slider.setRange(0, 0)
 
         self._room_id = room_id
         quality_map = {0: "origin", 1: "hd", 2: "sd"}
@@ -464,8 +472,11 @@ class MainWindow(QMainWindow):
         self._connected = False
         self._is_live_mode = True
         self._recorder.stop()
+        self._danmaku_reload_timer.stop()
         self._danmaku_collector.stop()
         self._danmaku_manager.clear()
+        self._ass_writer.close()
+        self._player.close()
         self._btn_connect.setText("连接")
         self._status_label.setText("未连接")
         self._btn_live.setVisible(False)
