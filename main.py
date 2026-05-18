@@ -1,9 +1,13 @@
 import os
 import sys
 
-# Add project root to PATH so the bundled libmpv-2.dll is found.
-_project_dir = os.path.dirname(os.path.abspath(__file__))
-os.environ["PATH"] = _project_dir + os.pathsep + os.path.join(_project_dir, "bin") + os.pathsep + os.environ["PATH"]
+# Resolve the base directory for PATH and icon.
+if getattr(sys, 'frozen', False):
+    _exe_dir = os.path.dirname(sys.executable)
+    os.environ["PATH"] = _exe_dir + os.pathsep + os.path.join(_exe_dir, "bin") + os.pathsep + os.environ["PATH"]
+else:
+    _exe_dir = os.path.dirname(os.path.abspath(__file__))
+    os.environ["PATH"] = _exe_dir + os.pathsep + os.path.join(_exe_dir, "bin") + os.pathsep + os.environ["PATH"]
 
 from PyQt6.QtGui import QIcon             # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -17,7 +21,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("ReLive")
-    app.setWindowIcon(QIcon(os.path.join(_project_dir, "Relive.ico")))
+    app.setWindowIcon(QIcon(os.path.join(_exe_dir, "Relive.ico")))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

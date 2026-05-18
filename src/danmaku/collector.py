@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -10,7 +11,13 @@ from pathlib import Path
 
 log = _log("danmaku")
 
-_WORKER_JS = str(Path(__file__).parent / "douyu_worker.js")
+if getattr(sys, 'frozen', False):
+    _EXE_DIR = os.path.dirname(sys.executable)
+    _NODE_CMD = os.path.join(_EXE_DIR, 'bin', 'node.exe')
+    _WORKER_JS = os.path.join(_EXE_DIR, 'danmaku', 'douyu_worker.js')
+else:
+    _NODE_CMD = 'node'
+    _WORKER_JS = str(Path(__file__).parent / 'douyu_worker.js')
 
 
 class DanmakuCollector(QObject):
@@ -32,7 +39,7 @@ class DanmakuCollector(QObject):
 
         log.info("[START] starting danmaku worker for room=%s", room_id)
 
-        cmd = ["node", _WORKER_JS, room_id]
+        cmd = [_NODE_CMD, _WORKER_JS, room_id]
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
