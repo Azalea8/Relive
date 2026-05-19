@@ -55,20 +55,23 @@ class FFmpegRecorder(QObject):
 
         clean_url = stream_url.replace(":443", "") if ":443" in stream_url else stream_url
 
-        output_pattern = os.path.join(config.SEGMENT_DIR, "%Y%m%d_%H%M%S.ts")
+        # Session prefix + segment index avoids duplicate filenames across
+        # reconnects (strftime at second granularity collides with hls_time=4).
+        prefix = time.strftime("%Y%m%d_%H%M%S")
+        output_pattern = os.path.join(config.SEGMENT_DIR, f"{prefix}_%06d.ts")
 
         cmd = [
             config.FFMPEG_PATH,
             "-loglevel", "warning",
             "-y",
             "-i", clean_url,
+            "-sn",          # skip subtitle tracks (Huya FLV carries WebVTT)
             "-c", "copy",
             "-f", "hls",
             "-hls_time", str(config.SEGMENT_SEC),
             "-hls_segment_type", "mpegts",
             "-hls_flags", "append_list",
             "-hls_list_size", str((config.CACHE_HOURS * 3600) // config.SEGMENT_SEC),
-            "-strftime", "1",
             "-hls_segment_filename", output_pattern,
             config.M3U8_PATH,
         ]

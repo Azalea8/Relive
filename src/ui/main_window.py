@@ -236,6 +236,12 @@ class MainWindow(QMainWindow):
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
 
+        self._platform_combo = QComboBox()
+        self._platform_combo.addItems(["斗鱼"])
+        self._platform_combo.setMinimumWidth(64)
+        self._platform_combo.setStyleSheet("font-size: 13px;")
+        top_row.addWidget(self._platform_combo)
+
         top_row.addWidget(QLabel("房间号:"))
         self._room_input = QWidget()
         room_layout = QHBoxLayout(self._room_input)
@@ -290,13 +296,9 @@ class MainWindow(QMainWindow):
         time_row.addWidget(self._time_label)
         self._delay_label = QLabel("")
         self._delay_label.setStyleSheet("color: #f6447f; font-size: 12px;")
-        self._delay_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        time_row.addWidget(self._delay_label)
+        self._delay_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         time_row.addStretch()
-        self._stream_time_label = QLabel("")
-        self._stream_time_label.setStyleSheet("color: #9aa5ce; font-size: 12px;")
-        self._stream_time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        time_row.addWidget(self._stream_time_label)
+        time_row.addWidget(self._delay_label)
         layout.addLayout(time_row)
 
         # === Controls ===
@@ -418,10 +420,13 @@ class MainWindow(QMainWindow):
         self._status_label.setText("连接中...")
         self._status_label.setStyleSheet("color: #f6447f; font-size: 12px;")
 
-        self._stream_worker = StreamWorker(room_id, quality)
+        self._stream_worker = StreamWorker(room_id, quality, self._platform())
         self._stream_worker.finished.connect(self._on_stream_url)
         self._stream_worker.error.connect(self._on_stream_error)
         self._stream_worker.start()
+
+    def _platform(self) -> str:
+        return "huya" if self._platform_combo.currentIndex() == 1 else "douyu"
 
     def _on_stream_url(self, url: str):
         if not url:
@@ -456,7 +461,7 @@ class MainWindow(QMainWindow):
         log.info("[CONNECT] live mode active, recorder_running=%s", self._recorder.is_running())
 
         # Start danmaku collection
-        self._danmaku_collector.start(self._room_id)
+        self._danmaku_collector.start(self._room_id, self._platform())
         if self._danmaku_enabled:
             self._danmaku_reload_timer.start(1000)
 
@@ -466,8 +471,6 @@ class MainWindow(QMainWindow):
         self._time_label.setText("")
         self._delay_label.setText("直播")
         self._delay_label.setStyleSheet("color: #10b981; font-size: 12px;")
-        self._status_label.setText("直播中")
-        self._status_label.setStyleSheet("color: #10b981; font-size: 12px;")
 
     def _on_stream_error(self, msg: str):
         log.error("stream error: %s", msg)
@@ -486,7 +489,6 @@ class MainWindow(QMainWindow):
         self._ass_writer.close()
         self._player.close()
         self._time_label.setText("")
-        self._stream_time_label.setText("")
         self._btn_connect.setText("连接")
         self._status_label.setText("未连接")
         self._btn_live.setVisible(False)
@@ -599,7 +601,7 @@ class MainWindow(QMainWindow):
         quality = quality_map.get(self._quality_combo.currentIndex(), "origin")
         log.info("[RECONNECT] fetching new URL for room=%s quality=%s", self._room_id, quality)
 
-        self._stream_worker = StreamWorker(self._room_id, quality)
+        self._stream_worker = StreamWorker(self._room_id, quality, self._platform())
         self._stream_worker.finished.connect(self._on_reconnect_url)
         self._stream_worker.error.connect(lambda msg: (
             log.error("[RECONNECT] stream worker error: %s", msg),
@@ -632,10 +634,6 @@ class MainWindow(QMainWindow):
             self._slider.blockSignals(True)
             self._slider.setValue(self._slider.maximum())
             self._slider.blockSignals(False)
-        # Segment wall-clock time bounds
-        if self._cache.last_ts:
-            ts = self._cache.last_ts.split("_")[1][:6]
-            self._stream_time_label.setText(f"{ts[:2]}:{ts[2:4]}:{ts[4:6]}")
         if not self._exporting:
             self._statusbar.showMessage(f"缓存: {count} 段 | 总时长: {_fmt_time(total)}")
         self._btn_live.setVisible(self._connected and not self._is_live_mode)
@@ -670,7 +668,6 @@ class MainWindow(QMainWindow):
             # Show real clock time from segment timestamps
             t_dvr = self._wall_clock_at(seconds)
             t_end = self._wall_clock_at(self._dvr_frozen_duration)
-            self._time_label.setText("")
             self._time_label.setText(f"回看 {t_dvr} / {t_end}")
 
     def _wall_clock_at(self, offset: float) -> str:
@@ -776,7 +773,7 @@ class MainWindow(QMainWindow):
         self._btn_live.setText("刷新中...")
         quality_map = {0: "origin", 1: "hd", 2: "sd"}
         quality = quality_map.get(self._quality_combo.currentIndex(), "origin")
-        self._go_live_worker = StreamWorker(self._room_id, quality)
+        self._go_live_worker = StreamWorker(self._room_id, quality, self._platform())
         self._go_live_worker.finished.connect(self._on_go_live_url)
         self._go_live_worker.error.connect(self._on_go_live_error)
         self._go_live_worker.start()
@@ -849,7 +846,7 @@ class MainWindow(QMainWindow):
         )
         if item:
             self._ass_writer.append_to_file(item)
-            if len(self._ass_writer._items) <= 5:
+            if self._ass_writer._live_line_count <= 5:
                 log.info("[DANMAKU_LIVE] appended: elapsed=%.1f text=%s", elapsed, content[:30])
         else:
             log.debug("[DANMAKU_LIVE] collision-dropped: text=%s", content[:30])

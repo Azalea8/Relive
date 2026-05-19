@@ -1,5 +1,7 @@
 """ASS 字幕生成器 — 弹幕飘动+颜色+碰撞检测"""
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -67,9 +69,9 @@ class AssWriter:
 
         self._ntracks = int(((self.height - self.dst) * self.dmrate) / (self.fontsize + self.margin_h))
         self._tracks = [_Track(i) for i in range(self._ntracks)]
-        self._items: list[DanmakuItem] = []
         self._live_path: str = ""
         self._live_fh = None
+        self._live_line_count: int = 0
 
         self._opacity_hex = f"{int((1 - self.opacity) * 255):02X}"
         self._outline_bgr = _rgb2bgr(self.outline_color)
@@ -127,7 +129,6 @@ class AssWriter:
         track = self._tracks[tid]
         track.last_item = item
         track.last_text_width = text_width
-        self._items.append(item)
         return item
 
     def _build_header(self) -> str:
@@ -170,9 +171,11 @@ class AssWriter:
             f"{item.text}"
         )
 
-    def write(self, output_path: str):
+    def write(self, output_path: str, items: list[DanmakuItem] | None = None):
+        if items is None:
+            return
         lines = [self._build_header()]
-        for item in self._items:
+        for item in items:
             lines.append(self.format_dialogue(item))
         lines.append("")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +188,7 @@ class AssWriter:
                              newline="", buffering=1)  # line-buffered
         self._live_fh.write(self._build_header())
         self._live_path = output_path
-        self._items.clear()
+        self._live_line_count = 0
         self.reset_tracks()
 
     def append_to_file(self, item: DanmakuItem, output_path: str = ""):
@@ -193,12 +196,40 @@ class AssWriter:
         if not fh:
             return
         fh.write(self.format_dialogue(item) + "\n")
+        self._live_line_count += 1
+        if self._live_line_count > 500:
+            self._trim_live_file()
+
+    def _trim_live_file(self):
+        path = self._live_path
+        if not path:
+            return
+        try:
+            if self._live_fh:
+                self._live_fh.close()
+                self._live_fh = None
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                lines = f.readlines()
+            # Keep header + last 100 dialogue lines
+            header_end = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith("Format:"):
+                    header_end = i + 1
+            trimmed = lines[:header_end] + lines[max(header_end, len(lines) - 100):]
+            # Atomic write: temp file then os.replace
+            fd, tmp = tempfile.mkstemp(suffix=".ass", dir=os.path.dirname(path))
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write("".join(trimmed))
+            os.replace(tmp, path)
+            self._live_line_count = min(100, len(trimmed) - header_end)
+        except OSError:
+            pass
+        self._live_fh = open(path, "a", encoding="utf-8", newline="", buffering=1)
 
     def reset_tracks(self):
         for track in self._tracks:
             track.last_item = None
             track.last_text_width = 0
-        self._items.clear()
 
     def close(self):
         if self._live_fh:
@@ -228,19 +259,22 @@ def danmaku_to_ass(ndjson_path: str, start_time_ms: float, output_path: str,
 
     writer = AssWriter(width=width, height=height, **kwargs)
 
-    for item in chat_msgs:
-        time_s = (item.get("timestamp_ms", 0) - start_time_ms) / 1000.0
+    items = []
+    for msg in chat_msgs:
+        time_s = (msg.get("timestamp_ms", 0) - start_time_ms) / 1000.0
         if time_s < 0:
             continue
         if time_start > 0 and time_s < time_start:
             continue
         if time_end > 0 and time_s >= time_end:
             continue
-        writer.add(
+        res = writer.add(
             time_s=time_s - time_start,
-            text=item.get("content", ""),
-            color=item.get("color", "ffffff"),
+            text=msg.get("content", ""),
+            color=msg.get("color", "ffffff"),
         )
+        if res:
+            items.append(res)
 
-    writer.write(output_path)
-    return len(writer._items)
+    writer.write(output_path, items)
+    return len(items)

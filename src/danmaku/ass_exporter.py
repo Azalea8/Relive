@@ -39,6 +39,7 @@ def export_clip_ass(ndjson_path: str, start_time_ms: float,
 
     writer = AssWriter(width=width, height=height, **kwargs)
 
+    items = []
     for msg in chat_msgs:
         offset_sec = msg.get("offset_sec", 0)
         if offset_sec < mark_in_sec or offset_sec >= mark_out_sec:
@@ -48,11 +49,13 @@ def export_clip_ass(ndjson_path: str, start_time_ms: float,
         if out_time < 0:
             continue
 
-        writer.add(
+        res = writer.add(
             time_s=out_time,
             text=msg.get("content", ""),
             color=msg.get("color", "ffffff"),
         )
+        if res:
+            items.append(res)
 
-    writer.write(output_path)
-    return len(writer._items)
+    writer.write(output_path, items)
+    return len(items)

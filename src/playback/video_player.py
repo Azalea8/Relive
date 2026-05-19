@@ -43,8 +43,6 @@ class VideoPlayer(QObject):
             ytdl='no',
             hwdec='auto',
             hwdec_codecs='all',
-            hr_seek='yes',
-            force_seekable='yes',
             log_handler=self._on_mpv_log,
         )
         self._log.info("mpv instance created")
@@ -92,6 +90,9 @@ class VideoPlayer(QObject):
         # Play directly — source is either a URL or a pre-built snapshot m3u8
         is_url = source.startswith("http://") or source.startswith("https://")
         self._log.info("[REINIT] play(%s) is_url=%s", source[:120], is_url)
+        if not is_url:
+            self._player.force_seekable = 'yes'
+            self._player.hr_seek = 'yes'
         self._player.play(source)
 
     def _on_mpv_log(self, loglevel, component, message):

@@ -164,8 +164,8 @@ class CacheManager(QObject):
             return
 
         changed = (count != self._count
-                   or abs(total - self._cached_total) > 0.5
-                   or first_ts != self._first_ts)
+                   or first_ts != self._first_ts
+                   or last_ts != self._last_ts)
 
         self._count = count
         self._cached_total = total

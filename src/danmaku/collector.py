@@ -14,14 +14,16 @@ log = _log("danmaku")
 if getattr(sys, 'frozen', False):
     _EXE_DIR = os.path.dirname(sys.executable)
     _NODE_CMD = os.path.join(_EXE_DIR, 'bin', 'node.exe')
-    _WORKER_JS = os.path.join(_EXE_DIR, 'danmaku', 'douyu_worker.js')
+    _DOUYU_JS = os.path.join(_EXE_DIR, 'danmaku', 'douyu_worker.js')
+    _HUYA_JS = os.path.join(_EXE_DIR, 'danmaku', 'huya_worker.js')
 else:
     _NODE_CMD = 'node'
-    _WORKER_JS = str(Path(__file__).parent / 'douyu_worker.js')
+    _DOUYU_JS = str(Path(__file__).parent / 'douyu_worker.js')
+    _HUYA_JS = str(Path(__file__).parent / 'huya_worker.js')
 
 
 class DanmakuCollector(QObject):
-    """管理 douyu_worker.js 子进程，解析弹幕 JSON 并发射信号"""
+    """管理 Node.js 子进程，解析弹幕 JSON 并发射信号"""
 
     message_received = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
@@ -33,13 +35,14 @@ class DanmakuCollector(QObject):
         self._stderr_thread: threading.Thread | None = None
         self._running = False
 
-    def start(self, room_id: str):
+    def start(self, room_id: str, platform: str = "douyu"):
         if self._running:
             self.stop()
 
-        log.info("[START] starting danmaku worker for room=%s", room_id)
+        worker_js = _HUYA_JS if platform == "huya" else _DOUYU_JS
+        log.info("[START] starting danmaku worker for room=%s platform=%s", room_id, platform)
 
-        cmd = [_NODE_CMD, _WORKER_JS, room_id]
+        cmd = [_NODE_CMD, worker_js, room_id]
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
