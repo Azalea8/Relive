@@ -1,4 +1,5 @@
 """ReLive configuration constants."""
+import json
 import os
 import sys
 from pathlib import Path
@@ -45,6 +46,7 @@ FFMPEG_PATH = os.path.join(BIN_DIR, "ffmpeg.exe") if os.path.exists(os.path.join
 
 # History file
 HISTORY_PATH = os.path.join(_BASE, "history.json")
+CONFIG_PATH = os.path.join(_BASE, "config.json")
 
 # Default Douyu quality
 DEFAULT_QUALITY = "origin"
@@ -57,3 +59,22 @@ DANMAKU_DM_RATE = 1.0        # fraction of screen height for danmaku
 DANMAKU_DENSITY = 1.0
 DANMAKU_OUTLINE_SIZE = 1.0
 DANMAKU_OUTLINE_COLOR = "000000"
+
+# ---------------------------------------------------------------------------
+# Runtime overrides via config.json
+# ---------------------------------------------------------------------------
+def _load_user_config():
+    if not os.path.exists(CONFIG_PATH):
+        return
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    for key in ("CACHE_HOURS", "TS_CLEANUP_HOURS",
+                "DANMAKU_FONT_SIZE", "DANMAKU_DURATION",
+                "DANMAKU_OPACITY", "DANMAKU_DM_RATE"):
+        if key in cfg:
+            globals()[key] = cfg[key]
+
+_load_user_config()

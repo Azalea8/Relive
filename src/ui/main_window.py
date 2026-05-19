@@ -339,6 +339,10 @@ class MainWindow(QMainWindow):
         self._btn_danmaku.clicked.connect(self._on_danmaku_toggle)
         ctrl_row.addWidget(self._btn_danmaku)
 
+        self._btn_settings = QPushButton("设置")
+        self._btn_settings.clicked.connect(self._on_settings)
+        ctrl_row.addWidget(self._btn_settings)
+
         self._btn_export = QPushButton("导出")
         self._btn_export.setObjectName("btn_export")
         self._btn_export.setEnabled(False)
@@ -849,6 +853,72 @@ class MainWindow(QMainWindow):
                 log.info("[DANMAKU_LIVE] appended: elapsed=%.1f text=%s", elapsed, content[:30])
         else:
             log.debug("[DANMAKU_LIVE] collision-dropped: text=%s", content[:30])
+
+    def _on_settings(self):
+        from PyQt6.QtWidgets import (QDialog, QFormLayout, QDoubleSpinBox,
+                                      QSpinBox, QDialogButtonBox, QLabel)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("设置")
+        dlg.resize(360, 320)
+
+        layout = QVBoxLayout(dlg)
+        form = QFormLayout()
+
+        cache_h = QDoubleSpinBox()
+        cache_h.setRange(0.1, 24); cache_h.setValue(config.CACHE_HOURS); cache_h.setSuffix(" 小时")
+        form.addRow("可回看时长（相对于直播）", cache_h)
+
+        cleanup_h = QDoubleSpinBox()
+        cleanup_h.setRange(0.05, 24); cleanup_h.setValue(config.TS_CLEANUP_HOURS); cleanup_h.setSuffix(" 小时")
+        form.addRow("定时清理缓存视频（不易过小）", cleanup_h)
+
+        font_sz = QSpinBox()
+        font_sz.setRange(12, 72); font_sz.setValue(config.DANMAKU_FONT_SIZE)
+        form.addRow("弹幕字号", font_sz)
+
+        dur = QDoubleSpinBox()
+        dur.setRange(5, 30); dur.setValue(config.DANMAKU_DURATION); dur.setSuffix(" 秒")
+        form.addRow("弹幕飘动时间（越小速度越快）", dur)
+
+        opacity = QDoubleSpinBox()
+        opacity.setRange(0, 1); opacity.setSingleStep(0.05); opacity.setValue(config.DANMAKU_OPACITY)
+        form.addRow("弹幕透明度", opacity)
+
+        dmrate = QDoubleSpinBox()
+        dmrate.setRange(0.1, 1.0); dmrate.setSingleStep(0.1); dmrate.setValue(config.DANMAKU_DM_RATE)
+        form.addRow("弹幕占屏比例", dmrate)
+
+        layout.addLayout(form)
+        layout.addSpacing(8)
+
+        note1 = QLabel("导出默认使用 GPU 加速，CPU 兜底")
+        note1.setStyleSheet("color: #e0af68; font-size: 12px;")
+        layout.addWidget(note1)
+
+        layout.addSpacing(8)
+
+        note2 = QLabel("修改后需重启应用生效")
+        note2.setStyleSheet("color: #e0fa86; font-size: 15px;")
+        layout.addWidget(note2)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        data = {
+            "CACHE_HOURS": cache_h.value(),
+            "TS_CLEANUP_HOURS": cleanup_h.value(),
+            "DANMAKU_FONT_SIZE": font_sz.value(),
+            "DANMAKU_DURATION": dur.value(),
+            "DANMAKU_OPACITY": opacity.value(),
+            "DANMAKU_DM_RATE": dmrate.value(),
+        }
+        with open(config.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _on_danmaku_toggle(self):
         self._danmaku_enabled = self._btn_danmaku.isChecked()

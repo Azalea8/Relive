@@ -16,6 +16,7 @@ ReLive.log
 bin/
 exports/
 history.json
+config.json
 
 # Node.js
 node_modules/
