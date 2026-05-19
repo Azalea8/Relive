@@ -61,8 +61,15 @@ def render_with_danmaku(video_path: str, ass_path: str, output_path: str,
 
 
 def render_with_fallback(video_path: str, ass_path: str, output_path: str) -> bool:
-    """尝试多个编码器，依次回退: h264_amf -> h264_nvenc -> h264"""
-    encoders = ["h264_amf", "h264_nvenc", "h264"]
+    """尝试多个编码器，依次回退"""
+    encoders = [
+        "h264_nvenc",        # NVIDIA
+        "h264_amf",          # AMD Windows
+        "h264_qsv",          # Intel QuickSync
+        "h264_videotoolbox", # macOS
+        "h264_vaapi",        # Linux VAAPI
+        "libx264",            # CPU fallback
+    ]
     for enc in encoders:
         log.info("[RENDER] trying encoder: %s", enc)
         if render_with_danmaku(video_path, ass_path, output_path, encoder=enc):
