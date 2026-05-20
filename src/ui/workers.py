@@ -73,9 +73,13 @@ class ExportWorker(QThread):
             )
 
             if result.returncode != 0:
-                err = result.stderr.decode("utf-8", errors="ignore")[-500:]
-                self.error.emit(f"FFmpeg failed: {err}")
+                err = result.stderr.decode("utf-8", errors="ignore")
+                _worker_log.error("export failed (exit=%d):\n%s", result.returncode, err)
+                self.error.emit(f"FFmpeg failed: {err[-500:]}")
                 return
+            if result.stderr:
+                _worker_log.info("export stderr:\n%s",
+                                result.stderr.decode("utf-8", errors="ignore")[-2000:])
 
             self.finished.emit(self._output)
 
@@ -102,8 +106,11 @@ class RenderWorker(QThread):
         self._output = output_path
 
     def run(self):
-        ok = render_with_fallback(self._video, self._ass, self._output)
-        if ok:
-            self.finished.emit(self._output)
-        else:
-            self.error.emit("所有编码器均失败")
+        try:
+            ok = render_with_fallback(self._video, self._ass, self._output)
+            if ok:
+                self.finished.emit(self._output)
+            else:
+                self.error.emit("所有编码器均失败")
+        except Exception as e:
+            self.error.emit(f"渲染异常: {e}")

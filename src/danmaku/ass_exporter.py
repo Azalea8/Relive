@@ -2,13 +2,14 @@
 import json
 from pathlib import Path
 
+from src import config
 from src.danmaku.ass_writer import AssWriter
 
 
 def export_clip_ass(ndjson_path: str, start_time_ms: float,
                     mark_in_sec: float, mark_out_sec: float,
                     output_path: str, time_offset: float = -1.5,
-                    width: int = 1920, height: int = 1080, **kwargs) -> int:
+                    width: int = 1280, height: int = 720, **kwargs) -> int:
     """从 NDJSON 生成切片范围内的 ASS 文件
 
     Args:
@@ -37,7 +38,8 @@ def export_clip_ass(ndjson_path: str, start_time_ms: float,
         except Exception:
             continue
 
-    writer = AssWriter(width=width, height=height, **kwargs)
+    scaled_fontsize = int(config.DANMAKU_FONT_SIZE * width / 1920)
+    writer = AssWriter(width=width, height=height, fontsize=scaled_fontsize, **kwargs)
 
     items = []
     for msg in chat_msgs:

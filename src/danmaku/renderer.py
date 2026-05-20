@@ -33,7 +33,6 @@ def render_with_danmaku(video_path: str, ass_path: str, output_path: str,
 
     cmd = [
         config.FFMPEG_PATH, "-y",
-        "-hwaccel", "auto",
         "-i", video_path,
         "-vf", f"subtitles='{ass_escaped}'",
         "-c:v", encoder,
@@ -46,16 +45,27 @@ def render_with_danmaku(video_path: str, ass_path: str, output_path: str,
 
     log.info("[RENDER] cmd: %s", " ".join(cmd))
 
-    result = subprocess.run(
-        cmd, capture_output=True, timeout=600,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-
-    if result.returncode != 0:
-        err = result.stderr.decode("utf-8", errors="ignore")[-1000:]
-        log.error("[RENDER] failed: %s", err)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=600,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        log.error("[RENDER] timeout")
+        return False
+    except Exception as e:
+        log.error("[RENDER] exception: %s", e)
         return False
 
+    if result.returncode != 0:
+        err = result.stderr.decode("utf-8", errors="ignore")
+        log.error("[RENDER] failed (exit=%d):\n%s", result.returncode, err)
+        return False
+
+    # Log successful stderr too (ffmpeg progress info)
+    if result.stderr:
+        log.info("[RENDER] stderr:\n%s",
+                 result.stderr.decode("utf-8", errors="ignore")[-2000:])
     log.info("[RENDER] done: %s", output_path)
     return True
 

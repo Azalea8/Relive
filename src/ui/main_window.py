@@ -875,7 +875,7 @@ class MainWindow(QMainWindow):
 
         dur = QDoubleSpinBox()
         dur.setRange(5, 30); dur.setValue(config.DANMAKU_DURATION); dur.setSuffix(" 秒")
-        form.addRow("弹幕飘动时间（越小速度越快）", dur)
+        form.addRow("弹幕飘动时间(控制移动速度,数值越小导出越快)", dur)
 
         opacity = QDoubleSpinBox()
         opacity.setRange(0, 1); opacity.setSingleStep(0.05); opacity.setValue(config.DANMAKU_OPACITY)
