@@ -1,6 +1,6 @@
 """SeekSlider — custom slider with click-to-seek and mark-in/out lines."""
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtGui import QColor, QPainter, QPainterPath
 from PyQt6.QtWidgets import QSlider, QStyle, QStyleOptionSlider, QWidget
 from src.logger import get as _log
 
@@ -23,22 +23,37 @@ class DensityOverlay(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        if not self._density:
+        if not self._density or len(self._density) < 2:
             return
         peak = max(self._density)
         if peak == 0:
             return
         w = self.width()
         h = self.height()
-        step = w / max(len(self._density) - 1, 1)
+        step = w / (len(self._density) - 1)
+
+        def pt(i):
+            return (i * step, h - 1 - (self._density[i] / peak) * (h - 2))
+
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QColor(90, 100, 140, 180))
-        for i in range(len(self._density) - 1):
-            x1 = int(i * step)
-            y1 = int(h - 1 - (self._density[i] / peak) * (h - 2))
-            x2 = int((i + 1) * step)
-            y2 = int(h - 1 - (self._density[i + 1] / peak) * (h - 2))
-            painter.drawLine(x1, y1, x2, y2)
+
+        path = QPainterPath()
+        path.moveTo(*pt(0))
+        n = len(self._density)
+        for i in range(n - 1):
+            # Catmull-Rom → cubic Bezier control points
+            x0, y0 = pt(max(i - 1, 0))
+            x1, y1 = pt(i)
+            x2, y2 = pt(i + 1)
+            x3, y3 = pt(min(i + 2, n - 1))
+            cp1x = x1 + (x2 - x0) / 6
+            cp1y = y1 + (y2 - y0) / 6
+            cp2x = x2 - (x3 - x1) / 6
+            cp2y = y2 - (y3 - y1) / 6
+            path.cubicTo(cp1x, cp1y, cp2x, cp2y, x2, y2)
+        painter.drawPath(path)
         painter.end()
 
 
