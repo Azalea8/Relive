@@ -218,6 +218,7 @@ class MainWindow(QMainWindow):
         self._render_worker: RenderWorker | None = None
         self._exporting = False  # suppress status bar during export
         self._reconnect_count = 0
+        self._fullscreen = False
 
         # Danmaku state
         self._danmaku_enabled = True
@@ -229,8 +230,14 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # === Top chrome container ===
+        self._top_chrome = QWidget()
+        tc_layout = QVBoxLayout(self._top_chrome)
+        tc_layout.setContentsMargins(6, 6, 6, 2)
+        tc_layout.setSpacing(4)
 
         # === Top bar: connection controls ===
         top_row = QHBoxLayout()
@@ -272,7 +279,8 @@ class MainWindow(QMainWindow):
         self._status_label.setStyleSheet("color: #565f89; font-size: 12px;")
         top_row.addWidget(self._status_label)
 
-        layout.addLayout(top_row)
+        tc_layout.addLayout(top_row)
+        layout.addWidget(self._top_chrome)
 
         # === Video area ===
         self._video_widget = QWidget()
@@ -284,14 +292,20 @@ class MainWindow(QMainWindow):
         # Player
         self._player = VideoPlayer(self._video_widget)
 
+        # === Bottom chrome container ===
+        self._bottom_chrome = QWidget()
+        bc_layout = QVBoxLayout(self._bottom_chrome)
+        bc_layout.setContentsMargins(6, 2, 6, 6)
+        bc_layout.setSpacing(4)
+
         # Density bar (between video and slider)
         self._density_overlay = DensityOverlay()
-        layout.addWidget(self._density_overlay)
+        bc_layout.addWidget(self._density_overlay)
 
         # === Timeline ===
         self._slider = SeekSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, 0)
-        layout.addWidget(self._slider)
+        bc_layout.addWidget(self._slider)
 
         # Time label
         time_row = QHBoxLayout()
@@ -303,7 +317,7 @@ class MainWindow(QMainWindow):
         self._delay_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         time_row.addStretch()
         time_row.addWidget(self._delay_label)
-        layout.addLayout(time_row)
+        bc_layout.addLayout(time_row)
 
         # === Controls ===
         ctrl_row = QHBoxLayout()
@@ -345,6 +359,10 @@ class MainWindow(QMainWindow):
         self._btn_danmaku.clicked.connect(self._on_danmaku_toggle)
         ctrl_row.addWidget(self._btn_danmaku)
 
+        self._btn_fullscreen = QPushButton("全屏")
+        self._btn_fullscreen.clicked.connect(self._on_fullscreen)
+        ctrl_row.addWidget(self._btn_fullscreen)
+
         self._btn_settings = QPushButton("设置")
         self._btn_settings.clicked.connect(self._on_settings)
         ctrl_row.addWidget(self._btn_settings)
@@ -355,7 +373,8 @@ class MainWindow(QMainWindow):
         self._btn_export.clicked.connect(self._on_export)
         ctrl_row.addWidget(self._btn_export)
 
-        layout.addLayout(ctrl_row)
+        bc_layout.addLayout(ctrl_row)
+        layout.addWidget(self._bottom_chrome)
 
         # === Status bar ===
         self._statusbar = self.statusBar()
@@ -641,6 +660,7 @@ class MainWindow(QMainWindow):
         if not self._exporting:
             self._statusbar.showMessage(f"缓存: {count} 段 | 总时长: {_fmt_time(total)}")
         self._btn_live.setVisible(self._connected and not self._is_live_mode)
+        self._btn_fullscreen.setEnabled(self._is_live_mode)
 
     def _on_player_loaded(self):
         log.info("[LOADED] player loaded: is_live=%s pos=%.3f dur=%.3f",
@@ -1081,12 +1101,35 @@ class MainWindow(QMainWindow):
         self._finish_export()
 
     # ------------------------------------------------------------------
+    # Fullscreen
+    # ------------------------------------------------------------------
+
+    def _on_fullscreen(self):
+        if not self._is_live_mode:
+            return
+        self._fullscreen = True
+        self._top_chrome.hide()
+        self._bottom_chrome.hide()
+        self._statusbar.hide()
+        self.showFullScreen()
+
+    def _exit_fullscreen(self):
+        self._fullscreen = False
+        self._top_chrome.show()
+        self._bottom_chrome.show()
+        self._statusbar.show()
+        self.showNormal()
+
+    # ------------------------------------------------------------------
     # Events
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
         if obj is self._video_widget and event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape and self._fullscreen:
+                    self._exit_fullscreen()
+                    return True
                 if event.key() == Qt.Key.Key_Space:
                     self._btn_play_pause.click()
                     return True
@@ -1097,6 +1140,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         log.info("shutting down")
+        if self._fullscreen:
+            self._exit_fullscreen()
         self._danmaku_collector.stop()
         self._danmaku_manager.clear()
         self._danmaku_reload_timer.stop()
