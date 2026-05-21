@@ -1,8 +1,45 @@
 """SeekSlider — custom slider with click-to-seek and mark-in/out lines."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
+from PyQt6.QtWidgets import QSlider, QStyle, QStyleOptionSlider, QWidget
 from src.logger import get as _log
+
+
+class DensityOverlay(QWidget):
+    """Thin transparent bar drawn above the slider to show danmaku density."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._density: list[int] = []
+        self.setFixedHeight(48)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_density(self, buckets: list[int]):
+        self._density = buckets
+        self.update()
+
+    def clear_density(self):
+        self._density = []
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._density:
+            return
+        peak = max(self._density)
+        if peak == 0:
+            return
+        w = self.width()
+        h = self.height()
+        step = w / max(len(self._density) - 1, 1)
+        painter = QPainter(self)
+        painter.setPen(QColor(90, 100, 140, 180))
+        for i in range(len(self._density) - 1):
+            x1 = int(i * step)
+            y1 = int(h - 1 - (self._density[i] / peak) * (h - 2))
+            x2 = int((i + 1) * step)
+            y2 = int(h - 1 - (self._density[i + 1] / peak) * (h - 2))
+            painter.drawLine(x1, y1, x2, y2)
+        painter.end()
 
 
 class SeekSlider(QSlider):

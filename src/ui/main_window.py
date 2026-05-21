@@ -26,7 +26,7 @@ from src.playback.cache_manager import CacheManager
 from src.danmaku import DanmakuCollector, DanmakuManager, AssWriter, danmaku_to_ass, export_clip_ass
 from src.logger import get as _log
 from src import config
-from src.ui.slider import SeekSlider
+from src.ui.slider import SeekSlider, DensityOverlay
 from src.ui.workers import StreamWorker, ExportWorker, RenderWorker
 
 log = _log("ui")# Main Window
@@ -283,6 +283,10 @@ class MainWindow(QMainWindow):
 
         # Player
         self._player = VideoPlayer(self._video_widget)
+
+        # Density bar (between video and slider)
+        self._density_overlay = DensityOverlay()
+        layout.addWidget(self._density_overlay)
 
         # === Timeline ===
         self._slider = SeekSlider(Qt.Orientation.Horizontal)
@@ -734,6 +738,14 @@ class MainWindow(QMainWindow):
             self._dvr_frozen_duration = expected_dur
             self._slider.setRange(0, int(expected_dur * 100))
 
+            # Danmaku density curve
+            ndjson = self._danmaku_manager.ndjson_path
+            if ndjson and os.path.exists(ndjson):
+                buckets = self._cache.get_density_buckets(
+                    ndjson, self._danmaku_manager.start_time * 1000,
+                    expected_dur)
+                self._density_overlay.set_density(buckets)
+
             # Generate DVR danmaku ASS
             self._danmaku_reload_timer.stop()
             self._dvr_ass_path = os.path.join(config.DANMAKU_DIR, "dvr.ass")
@@ -792,6 +804,7 @@ class MainWindow(QMainWindow):
         self._stream_url = url
         self._is_live_mode = True
         self._danmaku_live_start = time.time()  # reset timing so danmaku align with new mpv playback
+        self._density_overlay.clear_density()
         self._user_interacting_slider = False
         self._btn_live.setVisible(False)
         self._btn_live.setEnabled(True)
@@ -1074,12 +1087,12 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
         if obj is self._video_widget and event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Space:
-                self._btn_play_pause.click()
-                return True
-            elif event.key() == Qt.Key.Key_L:
-                self._on_go_live()
-                return True
+                if event.key() == Qt.Key.Key_Space:
+                    self._btn_play_pause.click()
+                    return True
+                elif event.key() == Qt.Key.Key_L:
+                    self._on_go_live()
+                    return True
         return super().eventFilter(obj, event)
 
     def closeEvent(self, event):

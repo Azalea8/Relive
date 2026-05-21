@@ -121,6 +121,35 @@ class CacheManager(QObject):
         log.info("[SNAPSHOT] wrote %d segments, %.1fs", self._count, self._cached_total)
         return SNAPSHOT_M3U8, self._cached_total
 
+    @staticmethod
+    def get_density_buckets(ndjson_path: str, start_time_ms: float,
+                            max_sec: float, bucket_sec: int = 2) -> list[int]:
+        """Read NDJSON and return per-bucket chat count for a density curve."""
+        import json
+        if not ndjson_path or not os.path.exists(ndjson_path):
+            return []
+        nbuckets = int(max_sec / bucket_sec) + 1
+        buckets = [0] * nbuckets
+        try:
+            with open(ndjson_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("msg_type") != "chat":
+                        continue
+                    ts_ms = msg.get("timestamp_ms", 0)
+                    offset = (ts_ms - start_time_ms) / 1000.0
+                    if 0 <= offset < max_sec:
+                        buckets[int(offset // bucket_sec)] += 1
+        except OSError:
+            pass
+        return buckets
+
     def _scan(self):
         try:
             self._scan_m3u8()
