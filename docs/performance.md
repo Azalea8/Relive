@@ -55,6 +55,8 @@
 - render 和 export worker 异常捕获
 - render 去掉 -hwaccel 避免 GPU 冲突
 - FFmpeg 导出/渲染 stderr 写日志
+- 直播模式全屏（仅 ESC 退出，回看禁用）
+- 弹幕密度曲线（Catmull-Rom 平滑 + 抗锯齿）
 
 ---
 

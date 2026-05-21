@@ -20,12 +20,9 @@
 #EXT-X-ENDLIST
 ```
 
-关键设计：
-- snapshot 与 segment 文件在同一目录（`cache/videos/`），裸文件名直接解析
-- 直接克隆 FFmpeg 的 m3u8，不重建，路径不变
-- `#EXT-X-PLAYLIST-TYPE:VOD` — mpv 当完整视频处理
-- `#EXT-X-ENDLIST` — 播放列表结束
-- 原子写入（tempfile + os.replace）
+## 弹幕密度曲线
+
+进入 DVR 时从 NDJSON 读取弹幕数据，计算每 2 秒桶的聊天条数，在进度条上方绘制灰色平滑曲线（Catmull-Rom 样条 + 抗锯齿）。切回直播后清空。
 
 ## HLS 滑动窗口
 
@@ -38,8 +35,6 @@ FFmpeg 使用 `-f hls -hls_flags append_list -hls_list_size N`：
 | `-hls_time 4` | 每 4 秒一个分段 |
 | `-hls_segment_filename {session}_%06d.ts` | 会话前缀 + 序号，无碰撞 |
 
-孤儿 TS 由 Python 定期清理：文件名自然排序，比 `_first_ts` 小的删除。
-
 ## 状态机
 
 ```
@@ -47,29 +42,36 @@ FFmpeg 使用 `-f hls -hls_flags append_list -hls_list_size N`：
     ┌──────────┐ ──────────────▶ ┌──────────┐
     │   LIVE   │                 │   DVR    │
     │ 直播预览  │ ◀────────────── │ 回看模式  │
-    │ + 直播弹幕│  点「回到直播」  │ + 回看弹幕│
+    │ + 直播弹幕│  点「回到直播」  │ + 密度曲线│
     └──────────┘  或拖到进度条末端 └──────────┘
 ```
 
-### LIVE→DVR（首次进入回看）
+### LIVE→DVR
 
 1. `CacheManager.write_snapshot()` 克隆 `playlist.m3u8`
 2. 锁定 slider range 为 snapshot 总时长
-3. `danmaku_to_ass(ndjson)` 从 NDJSON 文件生成 DVR 弹幕 ASS
-4. `VideoPlayer.reinitialize(snapshot, seek_to)` — 回看模式（缓存+seekable）
-5. `VideoPlayer.set_sub_file(dvr.ass)` 加载回看弹幕
+3. `get_density_buckets()` 读 NDJSON 生成密度曲线
+4. `danmaku_to_ass(ndjson)` 生成 DVR 弹幕 ASS
+5. `VideoPlayer.reinitialize(snapshot, seek_to)` — 回看模式（缓存+seekable）
+6. `VideoPlayer.set_sub_file(dvr.ass)` 加载回看弹幕
 
-### DVR→DVR（回看内部拖动）
+### DVR→DVR
 
 1. `VideoPlayer.seek(new_pos)` — 只调 mpv seek
-2. 不重建 snapshot，不重创播放器
 
-### DVR→LIVE（回到直播）
+### DVR→LIVE
 
-1. 获取新直播流 URL（token 过期需刷新）
+1. 获取新直播流 URL
 2. `_danmaku_live_start = time.time()` — 重置弹幕时间基准
-3. `AssWriter.open_live(live.ass)` — 行缓冲模式写入 ASS header
-4. `VideoPlayer.reinitialize(url, sub_file=live.ass)` — 直播模式（零缓冲低延迟）
+3. `clear_density()` — 清空密度曲线
+4. `AssWriter.open_live(live.ass)` — 写入 header
+5. `VideoPlayer.reinitialize(url, sub_file=live.ass)` — 直播模式
+
+## 全屏（直播专用）
+
+- 弹幕和设置之间的全屏按钮，仅在直播模式可用
+- 隐藏上下 chrome + 状态栏，仅显示视频
+- ESC 退出全屏
 
 ## mpv 双模式配置
 
@@ -79,19 +81,3 @@ FFmpeg 使用 `-f hls -hls_flags append_list -hls_list_size N`：
 | `cache_secs` | - | `10` |
 | `force_seekable` | no | `yes` |
 | `hr_seek` | no | `yes` |
-| `demuxer_max_{back_}bytes` | `0` | `auto` |
-
-## 弹幕时间线
-
-两条独立时间基准：
-
-| 基准 | 来源 | 重置时机 |
-|------|------|----------|
-| `start_time` (NDJSON) | 录制起点 wall clock | 从不 |
-| `_danmaku_live_start` (ASS) | 直播播放起点 | 每次 LIVE/DVR→LIVE |
-
-DVR ASS 从 NDJSON 文件生成：
-```python
-time_s = (timestamp_ms - start_time_ms) / 1000
-out_time = time_s - mark_in_sec + time_offset
-```

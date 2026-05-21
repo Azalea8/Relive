@@ -131,9 +131,12 @@ FFmpeg 使用 `-f hls -hls_flags append_list -hls_list_size 1800`：
 - 自动重连
 - 弹幕协调：`_danmaku_live_start` 时间基准管理
 - compact 时手动 sub_reload（不周期性 reload，无闪烁）
+- 全屏：直播模式专用按钮（弹幕和设置之间），回看置灰；隐藏上下 chrome + 状态栏，ESC 退出
+- 弹幕密度曲线：回看时自动读取 NDJSON 生成 2s 桶折线图，显示在进度条上方
 
-**slider.py** — 自定义进度条
+**slider.py** — 自定义进度条 + 密度叠加层
 - `SeekSlider(QSlider)` — 点击直接跳转 + 入出点标记线绘制
+- `DensityOverlay(QWidget)` — 48px 透明层叠放在滑块上方，Catmull-Rom 样条平滑曲线 + 抗锯齿
 
 **workers.py** — 后台线程
 - `StreamWorker` — 后台获取直播流 URL（支持斗鱼/虎牙）
