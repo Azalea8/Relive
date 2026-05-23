@@ -211,6 +211,7 @@ class MainWindow(QMainWindow):
         self._user_interacting_slider = False
         self._mark_in_sec: float | None = None
         self._mark_out_sec: float | None = None
+        self._base_offset_sec: float = 0.0
         self._seeking_from_slider = False
         self._dvr_frozen_duration = 0.0
         self._stream_worker: StreamWorker | None = None
@@ -637,6 +638,15 @@ class MainWindow(QMainWindow):
             log.info("[RECONNECT] URL obtained: %s, restarting recorder. is_live=%s",
                      url[:80], self._is_live_mode)
             self._stream_url = url
+            # Clear stale video segments so the new connection's cache
+            # starts from a consistent time base.
+            import shutil
+            if os.path.exists(config.SEGMENT_DIR):
+                try:
+                    shutil.rmtree(config.SEGMENT_DIR)
+                except OSError:
+                    pass
+            os.makedirs(config.SEGMENT_DIR, exist_ok=True)
             self._recorder.start(url)
         else:
             log.warning("[RECONNECT] empty URL, will retry")
@@ -696,14 +706,25 @@ class MainWindow(QMainWindow):
 
     def _wall_clock_at(self, offset: float) -> str:
         """Convert a recording-relative offset to wall-clock HH:MM:SS."""
+        import re
+        from datetime import datetime
+        from src import config
         first = self._cache.first_ts
         if not first:
             return "--:--:--"
-        base = first.split("_")[1]
-        h, m, s = int(base[0:2]), int(base[2:4]), int(base[4:6])
-        t = h * 3600 + m * 60 + s + int(offset)
-        t %= 86400
-        return f"{t // 3600:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
+        m = re.match(r'^(\d{8}_\d{6})_(\d{6})\.ts$', os.path.basename(first))
+        if not m:
+            return "--:--:--"
+        try:
+            prefix = m.group(1)  # e.g. "20260522_125049"
+            seq = int(m.group(2))  # e.g. 354
+            seg_abs = datetime.strptime(prefix, "%Y%m%d_%H%M%S").timestamp()
+            seg_abs += (seq - 1) * config.SEGMENT_SEC
+            t = seg_abs + offset
+            dt = datetime.fromtimestamp(t)
+            return dt.strftime("%H:%M:%S")
+        except (ValueError, OSError):
+            return "--:--:--"
 
     # ------------------------------------------------------------------
     # Slider (seek)
@@ -748,6 +769,9 @@ class MainWindow(QMainWindow):
             # LIVE→DVR: first time entering replay, create snapshot + load
             log.info("[SLIDER] LIVE->DVR: snapshot, seek_to=%.1fs", seek_to)
             self._is_live_mode = False
+            self._base_offset_sec = self._cache.get_first_segment_base_sec(
+                self._danmaku_manager.start_time)
+            log.info(f"[SLIDER] _base_offset_sec: {self._base_offset_sec}")
             self._delay_label.setText("")
             self._btn_live.setVisible(True)
             snapshot_path, expected_dur = self._cache.write_snapshot()
@@ -763,7 +787,8 @@ class MainWindow(QMainWindow):
             if ndjson and os.path.exists(ndjson):
                 buckets = self._cache.get_density_buckets(
                     ndjson, self._danmaku_manager.start_time * 1000,
-                    expected_dur)
+                    expected_dur,
+                    base_offset_sec=self._base_offset_sec)
                 self._density_overlay.set_density(buckets)
 
             # Generate DVR danmaku ASS
@@ -774,6 +799,7 @@ class MainWindow(QMainWindow):
                 danmaku_to_ass(
                     ndjson, self._danmaku_manager.start_time * 1000,
                     self._dvr_ass_path, width=1920, height=1080,
+                    base_offset_sec=self._base_offset_sec,
                 )
                 self._player.reinitialize(snapshot_path, start_pos=seek_to,
                                           expected_duration=expected_dur)
@@ -981,8 +1007,9 @@ class MainWindow(QMainWindow):
         self._update_export_button()
 
     def _update_mark_label(self):
-        inp = _fmt_time(self._mark_in_sec) if self._mark_in_sec is not None else "--:--"
-        out = _fmt_time(self._mark_out_sec) if self._mark_out_sec is not None else "--:--"
+        # base = (self._base_offset_sec or 0) + self._danmaku_manager.start_time
+        inp = self._wall_clock_at((self._mark_in_sec)) if self._mark_in_sec is not None else "--:--"
+        out = self._wall_clock_at((self._mark_out_sec)) if self._mark_out_sec is not None else "--:--"
         self._mark_label.setText(f"入点: {inp}  出点: {out}")
 
     def _update_export_button(self):
@@ -1068,6 +1095,7 @@ class MainWindow(QMainWindow):
             count = export_clip_ass(
                 ndjson, self._danmaku_manager.start_time * 1000,
                 self._mark_in_sec, self._mark_out_sec, ass_path,
+                base_offset_sec=(self._base_offset_sec or 0),
             )
             log.info("clip ASS generated: %d danmaku -> %s", count, ass_path)
 

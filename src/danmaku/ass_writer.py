@@ -238,9 +238,10 @@ class AssWriter:
         self._live_path = ""
 
 
-def danmaku_to_ass(ndjson_path: str, start_time_ms: float, output_path: str,
+def danmaku_to_ass(ndjson_path: str, start_time_ms: float, output_path: str, time_offset: float = -3,
                    width: int = 1920, height: int = 1080,
-                   time_start: float = 0.0, time_end: float = 0.0, **kwargs) -> int:
+                   time_start: float = 0.0, time_end: float = 0.0,
+                   base_offset_sec: float = 0.0, **kwargs) -> int:
     """从 NDJSON 文件生成 ASS（离线），返回弹幕数
 
     Args:
@@ -249,6 +250,7 @@ def danmaku_to_ass(ndjson_path: str, start_time_ms: float, output_path: str,
         output_path: 输出 ASS 路径
         time_start: 过滤起始秒数（0 = 不限）
         time_end: 过滤结束秒数（0 = 不限）
+        base_offset_sec: 缓存起始对应的绝对 offset_sec，用于对齐视频时间线
     """
     text = Path(ndjson_path).read_text(encoding="utf-8")
     if not text.strip():
@@ -267,6 +269,9 @@ def danmaku_to_ass(ndjson_path: str, start_time_ms: float, output_path: str,
         if time_start > 0 and time_s < time_start:
             continue
         if time_end > 0 and time_s >= time_end:
+            continue
+        time_s = time_s - base_offset_sec + time_offset
+        if time_s < 0:
             continue
         res = writer.add(
             time_s=time_s - time_start,

@@ -26,6 +26,10 @@ def _cleanup_all():
 
 atexit.register(_cleanup_all)
 
+from src.winjob import JobObject
+
+_winjob = JobObject()
+
 
 class FFmpegRecorder(QObject):
     """Manages an FFmpeg subprocess that captures a live stream into TS segments."""
@@ -82,7 +86,7 @@ class FFmpegRecorder(QObject):
 
         creationflags = 0
         if os.name == "nt":
-            creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            creationflags = subprocess.CREATE_NO_WINDOW
 
         env = os.environ.copy()
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
@@ -112,12 +116,19 @@ class FFmpegRecorder(QObject):
         self._stderr_thread.start()
         _live_pids.add(self._process.pid)
 
+        try:
+            _winjob.add_pid(self._process.pid)
+            log.info("[START] FFmpeg added to JobObject")
+        except Exception as e:
+            log.warning("[START] JobObject.add_pid failed: %s", e)
+
         self._start_time = time.time()
         self._last_seglist_mtime = self._get_seglist_mtime()
         self._last_mtime_check = time.time()
         self._running = True
 
         log.info("[START] FFmpeg segment started, PID=%d", self._process.pid)
+        log.info(f"[START] FFmpeg _start_time, {self._start_time}")
         self.state_changed.emit("recording")
 
     def stop(self):

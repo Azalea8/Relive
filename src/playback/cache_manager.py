@@ -1,7 +1,9 @@
 """Cache manager — reads FFmpeg's HLS m3u8 to track segments for DVR."""
 import os
+import re
 import tempfile
 import time
+from datetime import datetime
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from src.logger import get as _log
@@ -23,7 +25,7 @@ class CacheManager(QObject):
         self._cached_total: float = 0.0
         self._first_ts: str = ""
         self._last_ts: str = ""
-        self._last_cleanup: float = 0.0
+        self._last_cleanup: float = time.time()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._scan)
@@ -43,6 +45,30 @@ class CacheManager(QObject):
     @property
     def last_ts(self) -> str:
         return self._last_ts
+
+    def get_first_segment_base_sec(self, start_time: float) -> float:
+        """Parse the first TS segment filename to compute the offset_sec value
+        at the beginning of the cache window (player position 0).
+
+        Filename format: {YYYYMMDD_HHMMSS}_{seq:06d}.ts
+        Returns 0 if parsing fails or no segments are cached.
+        """
+        if not self._first_ts:
+            return 0.0
+        m = re.match(
+            r'^(\d{8}_\d{6})_(\d{6})\.ts$',
+            os.path.basename(self._first_ts),
+        )
+        if not m:
+            return 0.0
+        try:
+            prefix = m.group(1)  # e.g. "20260522_140000"
+            seq = int(m.group(2))  # e.g. 42
+            seg_abs_time = datetime.strptime(prefix, "%Y%m%d_%H%M%S").timestamp()
+            seg_abs_time += (seq - 1) * config.SEGMENT_SEC
+            return seg_abs_time - start_time
+        except (ValueError, OSError):
+            return 0.0
 
     def get_paths_in_range(self, start_sec: float, end_sec: float) -> list[str]:
         """Return absolute paths of TS files overlapping [start_sec, end_sec).
@@ -123,13 +149,19 @@ class CacheManager(QObject):
 
     @staticmethod
     def get_density_buckets(ndjson_path: str, start_time_ms: float,
-                            max_sec: float, bucket_sec: int = 2) -> list[int]:
-        """Read NDJSON and return per-bucket chat count for a density curve."""
+                            max_sec: float, bucket_sec: int = 0,
+                            base_offset_sec: float = 0.0) -> list[int]:
+        """Read NDJSON and return per-bucket chat count for a density curve.
+        bucket_sec=0 auto-scales to target ~600 buckets."""
         import json
         if not ndjson_path or not os.path.exists(ndjson_path):
             return []
+        if bucket_sec <= 0:
+            bucket_sec = max(2, int(max_sec / 600))
         nbuckets = int(max_sec / bucket_sec) + 1
         buckets = [0] * nbuckets
+        abs_start = base_offset_sec
+        abs_end = base_offset_sec + max_sec
         try:
             with open(ndjson_path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -144,8 +176,8 @@ class CacheManager(QObject):
                         continue
                     ts_ms = msg.get("timestamp_ms", 0)
                     offset = (ts_ms - start_time_ms) / 1000.0
-                    if 0 <= offset < max_sec:
-                        buckets[int(offset // bucket_sec)] += 1
+                    if abs_start <= offset < abs_end:
+                        buckets[int((offset - abs_start) // bucket_sec)] += 1
         except OSError:
             pass
         return buckets

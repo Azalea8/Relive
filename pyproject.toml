@@ -8,6 +8,7 @@ dependencies = [
     "PyQt6>=6.5",
     "python-mpv>=1.0",
     "httpx",
+    "pywin32>=311",
 ]
 
 [dependency-groups]
