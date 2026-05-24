@@ -46,6 +46,21 @@ class CacheManager(QObject):
     def last_ts(self) -> str:
         return self._last_ts
 
+    @property
+    def snapshot_first_ts(self) -> str:
+        """Return the first TS filename from the frozen snapshot, or '' if none."""
+        if not os.path.exists(SNAPSHOT_M3U8):
+            return ""
+        try:
+            with open(SNAPSHOT_M3U8, "r", encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#"):
+                        return stripped
+        except OSError:
+            pass
+        return ""
+
     def get_first_segment_base_sec(self, start_time: float) -> float:
         """Parse the first TS segment filename to compute the offset_sec value
         at the beginning of the cache window (player position 0).
@@ -65,7 +80,7 @@ class CacheManager(QObject):
             prefix = m.group(1)  # e.g. "20260522_140000"
             seq = int(m.group(2))  # e.g. 42
             seg_abs_time = datetime.strptime(prefix, "%Y%m%d_%H%M%S").timestamp()
-            seg_abs_time += (seq - 1) * config.SEGMENT_SEC
+            seg_abs_time += seq * config.SEGMENT_SEC
             return seg_abs_time - start_time
         except (ValueError, OSError):
             return 0.0
@@ -73,7 +88,9 @@ class CacheManager(QObject):
     def get_paths_in_range(self, start_sec: float, end_sec: float) -> list[str]:
         """Return absolute paths of TS files overlapping [start_sec, end_sec).
         Parses the m3u8 on demand — only called during export, not on the hot path."""
-        m3u8_path = config.M3U8_PATH
+
+        # Prefer the frozen DVR snapshot so marks match what the user saw;
+        m3u8_path = SNAPSHOT_M3U8
         if not os.path.exists(m3u8_path):
             return []
         try:
@@ -253,7 +270,6 @@ class CacheManager(QObject):
             if orphaned:
                 msg = f"[CLEANUP] removed {len(orphaned)} orphan TS: {orphaned[0]} .. {orphaned[-1]}"
                 log.info(msg)
-                print(msg)
             self._last_cleanup = now
 
         if changed:

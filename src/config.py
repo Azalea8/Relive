@@ -41,8 +41,11 @@ DANMAKU_DIR = os.path.join(CACHE_DIR, "danmaku")
 EXPORT_DIR = os.path.join(_BASE, "exports")
 BIN_DIR = os.path.join(_BASE, "bin")
 
-# FFmpeg path
-FFMPEG_PATH = os.path.join(BIN_DIR, "ffmpeg.exe") if os.path.exists(os.path.join(BIN_DIR, "ffmpeg.exe")) else "ffmpeg"
+# FFmpeg / ffprobe paths
+_FFMPEG_BIN = os.path.join(BIN_DIR, "ffmpeg.exe")
+FFMPEG_PATH = _FFMPEG_BIN if os.path.exists(_FFMPEG_BIN) else "ffmpeg"
+_FFPROBE_BIN = os.path.join(BIN_DIR, "ffprobe.exe")
+FFPROBE_PATH = _FFPROBE_BIN if os.path.exists(_FFPROBE_BIN) else "ffprobe"
 
 # History file
 HISTORY_PATH = os.path.join(_BASE, "history.json")
@@ -60,6 +63,16 @@ DANMAKU_DENSITY = 1.0
 DANMAKU_OUTLINE_SIZE = 1.0
 DANMAKU_OUTLINE_COLOR = "000000"
 
+# Render progress update throttle (ms) — avoids excessive UI repaints
+RENDER_PROGRESS_MS = 250
+
+# Danmaku burn-in encoding defaults
+RENDER_PRESET = "veryfast"   # x264 preset: ultrafast/fast/medium/slow — faster=bigger file
+RENDER_CRF = 28              # x264 CRF quality (18=visually lossless, 23=default, 28=small)
+RENDER_BITRATE = "15M"       # fallback bitrate for hardware encoders that lack CRF
+RENDER_AUDIO_BITRATE = "192k"
+RENDER_HW_QUALITY = "fast"  # fast / balanced / slow — maps to each HW encoder's preset
+
 # ---------------------------------------------------------------------------
 # Runtime overrides via config.json
 # ---------------------------------------------------------------------------
@@ -73,7 +86,9 @@ def _load_user_config():
         return
     for key in ("CACHE_HOURS", "TS_CLEANUP_HOURS",
                 "DANMAKU_FONT_SIZE", "DANMAKU_DURATION",
-                "DANMAKU_OPACITY", "DANMAKU_DM_RATE"):
+                "DANMAKU_OPACITY", "DANMAKU_DM_RATE",
+                "RENDER_PRESET", "RENDER_HW_QUALITY",
+                "RENDER_CRF", "RENDER_AUDIO_BITRATE"):
         if key in cfg:
             globals()[key] = cfg[key]
 

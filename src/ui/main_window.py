@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSlider,
     QStyle,
@@ -217,9 +218,11 @@ class MainWindow(QMainWindow):
         self._stream_worker: StreamWorker | None = None
         self._export_worker: ExportWorker | None = None
         self._render_worker: RenderWorker | None = None
+        self._render_with_danmaku = True  # set by export dialog
         self._exporting = False  # suppress status bar during export
         self._reconnect_count = 0
         self._fullscreen = False
+        self._start_time = time.monotonic()
 
         # Danmaku state
         self._danmaku_enabled = True
@@ -374,12 +377,33 @@ class MainWindow(QMainWindow):
         self._btn_export.clicked.connect(self._on_export)
         ctrl_row.addWidget(self._btn_export)
 
+        self._render_progress = QProgressBar()
+        self._render_progress.setMaximum(100)
+        self._render_progress.setMaximumWidth(150)
+        self._render_progress.setMaximumHeight(18)
+        self._render_progress.setVisible(False)
+        ctrl_row.addWidget(self._render_progress)
+
+        self._btn_cancel_render = QPushButton("取消")
+        self._btn_cancel_render.setObjectName("btn_cancel_render")
+        self._btn_cancel_render.setVisible(False)
+        self._btn_cancel_render.clicked.connect(self._on_cancel_render)
+        ctrl_row.addWidget(self._btn_cancel_render)
+
         bc_layout.addLayout(ctrl_row)
         layout.addWidget(self._bottom_chrome)
 
         # === Status bar ===
         self._statusbar = self.statusBar()
         self._statusbar.showMessage("就绪")
+
+        self._runtime_label = QLabel("00:00")
+        self._runtime_label.setStyleSheet("font-size: 11px; padding-right: 4px;")
+        self._statusbar.addPermanentWidget(self._runtime_label)
+
+        self._runtime_timer = QTimer(self)
+        self._runtime_timer.timeout.connect(self._update_runtime)
+        self._runtime_timer.start(1000)
 
         # === Core components ===
         self._recorder = FFmpegRecorder(self)
@@ -704,12 +728,22 @@ class MainWindow(QMainWindow):
             t_end = self._wall_clock_at(self._dvr_frozen_duration)
             self._time_label.setText(f"回看 {t_dvr} / {t_end}")
 
+    def _update_runtime(self):
+        """Update the status bar runtime label."""
+        sec = int(time.monotonic() - self._start_time)
+        h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+        if h > 0:
+            self._runtime_label.setText(f"运行 {h}:{m:02d}:{s:02d}")
+        else:
+            self._runtime_label.setText(f"运行 {m:02d}:{s:02d}")
+
     def _wall_clock_at(self, offset: float) -> str:
         """Convert a recording-relative offset to wall-clock HH:MM:SS."""
         import re
         from datetime import datetime
         from src import config
-        first = self._cache.first_ts
+        # Prefer snapshot's first TS so wall clock stays pinned to DVR timeline
+        first = self._cache.snapshot_first_ts
         if not first:
             return "--:--:--"
         m = re.match(r'^(\d{8}_\d{6})_(\d{6})\.ts$', os.path.basename(first))
@@ -921,7 +955,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
 
         cache_h = QDoubleSpinBox()
-        cache_h.setRange(0.1, 24); cache_h.setValue(config.CACHE_HOURS); cache_h.setSuffix(" 小时")
+        cache_h.setRange(0.05, 24); cache_h.setValue(config.CACHE_HOURS); cache_h.setSuffix(" 小时")
         form.addRow("可回看时长（相对于直播）", cache_h)
 
         cleanup_h = QDoubleSpinBox()
@@ -1022,6 +1056,18 @@ class MainWindow(QMainWindow):
     # Export
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _log_write(log_path: str | None, msg: str) -> None:
+        """Append a timestamped line to a log file."""
+        if not log_path:
+            return
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{ts}  {msg}\n")
+        except OSError:
+            pass
+
     def _on_export(self):
         if self._mark_in_sec is None or self._mark_out_sec is None:
             return
@@ -1029,7 +1075,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "导出", "出点必须在入点之后")
             return
 
-        # Find segments in range (parses m3u8 on demand)
         segs_in_range = self._cache.get_paths_in_range(
             self._mark_in_sec, self._mark_out_sec)
 
@@ -1037,19 +1082,126 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "导出", "所选范围内无片段")
             return
 
-        # Ask for folder name
-        default_name = time.strftime("%Y%m%d_%H%M%S")
-        name, ok = QInputDialog.getText(
-            self, "导出片段", "导出文件夹名称:",
-            text=default_name,
-        )
-        if not ok or not name.strip():
-            return
-        name = name.strip()
+        has_danmaku = (self._danmaku_manager.ndjson_path is not None
+                       and os.path.exists(self._danmaku_manager.ndjson_path))
 
-        # Create export folder
+        # --- Export config dialog ---
+        from PyQt6.QtWidgets import (QDialog, QFormLayout, QCheckBox,
+                                      QComboBox, QDialogButtonBox, QLabel,
+                                      QLineEdit, QGroupBox)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("导出片段")
+        dlg.resize(400, 320)
+
+        layout = QVBoxLayout(dlg)
+
+        # Folder name
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("文件夹名称:"))
+        name_edit = QLineEdit(time.strftime("%Y%m%d_%H%M%S"))
+        name_row.addWidget(name_edit)
+        layout.addLayout(name_row)
+
+        layout.addSpacing(8)
+
+        # Danmaku checkbox
+        dm_check = QCheckBox("烧录弹幕到视频")
+        dm_check.setChecked(True)
+        dm_check.setVisible(has_danmaku)
+        layout.addWidget(dm_check)
+
+        # --- Render settings group ---
+        render_group = QGroupBox("渲染设置")
+        render_form = QFormLayout(render_group)
+
+        sw_presets = ["ultrafast", "superfast", "veryfast", "faster",
+                      "fast", "medium", "slow"]
+        sw_combo = QComboBox()
+        for p in sw_presets:
+            sw_combo.addItem(p, p)
+        idx = sw_combo.findData(config.RENDER_PRESET)
+        if idx >= 0:
+            sw_combo.setCurrentIndex(idx)
+        sw_row = QHBoxLayout()
+        sw_row.addWidget(sw_combo)
+        sw_hint = QLabel("(libx264)")
+        sw_hint.setStyleSheet("color: #888; font-size: 11px;")
+        sw_row.addWidget(sw_hint)
+        sw_row.addStretch()
+        render_form.addRow("软编码速度（兜底）", sw_row)
+
+        hw_labels = {"fast": "快", "balanced": "均衡", "slow": "慢"}
+        hw_combo = QComboBox()
+        for key, label in hw_labels.items():
+            hw_combo.addItem(label, key)
+        idx = hw_combo.findData(config.RENDER_HW_QUALITY)
+        if idx >= 0:
+            hw_combo.setCurrentIndex(idx)
+        hw_row = QHBoxLayout()
+        hw_row.addWidget(hw_combo)
+        hw_hint = QLabel("(NVENC/QSV/AMF)")
+        hw_hint.setStyleSheet("color: #888; font-size: 11px;")
+        hw_row.addWidget(hw_hint)
+        hw_row.addStretch()
+        render_form.addRow("硬编码速度（默认）", hw_row)
+
+        crf_opts = [(18, "高 (CRF 18)"), (23, "较高 (CRF 23)"), (28, "标准 (CRF 28)")]
+        crf_combo = QComboBox()
+        for val, label in crf_opts:
+            crf_combo.addItem(label, val)
+        idx = crf_combo.findData(config.RENDER_CRF)
+        if idx >= 0:
+            crf_combo.setCurrentIndex(idx)
+        render_form.addRow("画质", crf_combo)
+
+        layout.addWidget(render_group)
+
+        # Toggle render group visibility with checkbox
+        def _toggle_render(checked):
+            render_group.setVisible(checked)
+
+        dm_check.toggled.connect(_toggle_render)
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name = name_edit.text().strip()
+        if not name:
+            return
+
+        render_with_dm = dm_check.isChecked() and has_danmaku
+        self._render_with_danmaku = render_with_dm
+
+        # Persist render settings to config.json + update globals for this session
+        new_preset = sw_combo.currentData()
+        new_hw_quality = hw_combo.currentData()
+        new_crf = crf_combo.currentData()
+        config.RENDER_PRESET = new_preset
+        config.RENDER_HW_QUALITY = new_hw_quality
+        config.RENDER_CRF = new_crf
+        self._save_render_config(new_preset, new_hw_quality, new_crf)
+
+        # Create export folder + log
         self._export_folder = os.path.join(config.EXPORT_DIR, name)
         os.makedirs(self._export_folder, exist_ok=True)
+
+        self._export_log = os.path.join(self._export_folder, "export.log")
+        self._export_start_time = time.monotonic()
+        self._log_write(self._export_log,
+            f"导出开始  入点: {self._mark_in_sec:.1f}s  出点: {self._mark_out_sec:.1f}s  "
+            f"片段: {len(segs_in_range)}  目录: {self._export_folder}")
+        self._log_write(self._export_log,
+            f"渲染设置  preset={config.RENDER_PRESET}  "
+            f"hw_quality={config.RENDER_HW_QUALITY}  crf={config.RENDER_CRF}"
+            f"  {'烧录弹幕' if render_with_dm else '跳过弹幕'}")
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         self._export_base = os.path.join(self._export_folder, f"relive_{ts}")
@@ -1059,10 +1211,27 @@ class MainWindow(QMainWindow):
         self._exporting = True
         self._status(f"导出中 → {name}/")
 
-        self._export_worker = ExportWorker(segs_in_range, output_path)
+        self._export_worker = ExportWorker(segs_in_range, output_path,
+                                           log_path=self._export_log)
         self._export_worker.finished.connect(self._on_export_done)
         self._export_worker.error.connect(self._on_export_error)
         self._export_worker.start()
+
+    def _save_render_config(self, preset: str, hw_quality: str, crf: int):
+        """Persist render settings to config.json, merging with existing keys."""
+        try:
+            if os.path.exists(config.CONFIG_PATH):
+                with open(config.CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            else:
+                cfg = {}
+        except (OSError, json.JSONDecodeError):
+            cfg = {}
+        cfg["RENDER_PRESET"] = preset
+        cfg["RENDER_HW_QUALITY"] = hw_quality
+        cfg["RENDER_CRF"] = crf
+        with open(config.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
 
     def _status(self, msg: str):
         folder = getattr(self, '_export_folder', '')
@@ -1089,44 +1258,82 @@ class MainWindow(QMainWindow):
         log.info("video export done: %s", path)
 
         ndjson = self._danmaku_manager.ndjson_path
-        if ndjson and os.path.exists(ndjson):
+        render_dm = self._render_with_danmaku and ndjson and os.path.exists(ndjson)
+
+        if render_dm:
             ass_path = self._export_base + ".ass"
             self._status("生成弹幕字幕")
+            self._log_write(self._export_log, "生成弹幕 ASS 字幕")
             count = export_clip_ass(
                 ndjson, self._danmaku_manager.start_time * 1000,
                 self._mark_in_sec, self._mark_out_sec, ass_path,
                 base_offset_sec=(self._base_offset_sec or 0),
             )
             log.info("clip ASS generated: %d danmaku -> %s", count, ass_path)
+            self._log_write(self._export_log, f"ASS 弹幕: {count} 条")
 
             dm_path = self._export_base + "_dm.mp4"
             self._status("渲染弹幕")
-            self._render_worker = RenderWorker(path, ass_path, dm_path)
+            self._render_worker = RenderWorker(path, ass_path, dm_path,
+                                                log_path=self._export_log)
             self._render_worker.finished.connect(self._on_render_done)
             self._render_worker.error.connect(self._on_render_error)
+            self._render_worker.progress.connect(self._on_render_progress)
             self._render_worker.start()
+
+            self._render_progress.setValue(0)
+            self._render_progress.setVisible(True)
+            self._btn_cancel_render.setEnabled(True)
+            self._btn_cancel_render.setVisible(True)
         else:
+            elapsed = time.monotonic() - self._export_start_time
+            self._log_write(self._export_log,
+                f"导出完成  输出: {path}  总耗时: {elapsed:.1f}s")
             self._btn_export.setEnabled(True)
             self._status("已导出")
             self._finish_export()
 
     def _on_export_error(self, msg: str):
+        self._log_write(getattr(self, '_export_log', None),
+            f"导出失败: {msg}")
         self._btn_export.setEnabled(True)
         self._status(f"导出失败: {msg}")
         log.error("export error: %s", msg)
         self._finish_export()
 
     def _on_render_done(self, path: str):
+        elapsed = time.monotonic() - self._export_start_time
+        self._log_write(self._export_log,
+            f"导出完成  输出: {path}  总耗时: {elapsed:.1f}s")
         self._btn_export.setEnabled(True)
         self._status("已导出（含弹幕）")
         log.info("render done: %s", path)
+        self._render_progress.setVisible(False)
+        self._btn_cancel_render.setVisible(False)
         self._finish_export()
 
     def _on_render_error(self, msg: str):
+        self._log_write(self._export_log,
+            f"渲染失败: {msg}")
         self._btn_export.setEnabled(True)
-        self._status("已导出（弹幕渲染失败）")
+        if "取消" in msg:
+            self._status("已取消导出")
+        else:
+            self._status("已导出（弹幕渲染失败）")
         log.error("render error: %s", msg)
+        self._render_progress.setVisible(False)
+        self._btn_cancel_render.setVisible(False)
         self._finish_export()
+
+    def _on_render_progress(self, pct: int, status: str):
+        self._render_progress.setValue(pct)
+        self._status(f"渲染弹幕 ({pct}% - {status})")
+
+    def _on_cancel_render(self):
+        if self._render_worker is not None and self._render_worker.isRunning():
+            self._render_worker.cancel()
+            self._btn_cancel_render.setEnabled(False)
+            self._status("取消渲染中...")
 
     # ------------------------------------------------------------------
     # Fullscreen
