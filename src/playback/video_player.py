@@ -31,33 +31,29 @@ class VideoPlayer(QObject):
         self._timer.start(33)  # ~30fps
         self._create_mpv()
 
-    def _create_mpv(self):
+    def _create_mpv(self, http_header_fields: str = ""):
         """Create a fresh mpv instance embedded in the container widget."""
         wid = str(int(self._container.winId()))
-        self._player = mpv.MPV(
-            wid=wid,
-            keep_open='yes',
-            osc='no',
-            input_default_bindings='no',
-            input_vo_keyboard='no',
-            ytdl='no',
-            hwdec='auto',
-            hwdec_codecs='all',
-            log_handler=self._on_mpv_log,
-        )
+        kwargs: dict = {
+            "wid": wid,
+            "keep_open": "yes",
+            "osc": "no",
+            "input_default_bindings": "no",
+            "input_vo_keyboard": "no",
+            "ytdl": "no",
+            "hwdec": "auto",
+            "hwdec_codecs": "all",
+            "log_handler": self._on_mpv_log,
+        }
+        if http_header_fields:
+            kwargs["http_header_fields"] = http_header_fields
+        self._player = mpv.MPV(**kwargs)
         self._log.info("mpv instance created")
 
     def reinitialize(self, source: str, start_pos: float | None = None,
-                     expected_duration: float = 0.0, sub_file: str = ""):
-        """Destroy current mpv and create a fresh one playing `source`.
-
-        Args:
-            source: URL or local file path to play.
-            start_pos: If set, seek to this position once playback starts.
-            expected_duration: Expected total duration — seek waits until
-                mpv reports dur >= 80% of this before executing.
-            sub_file: Optional ASS subtitle file to load.
-        """
+                     expected_duration: float = 0.0, sub_file: str = "",
+                     http_header_fields: str = ""):
+        """Destroy current mpv and create a fresh one playing `source`."""
         self._log.info("[REINIT] source=%s start_pos=%s expected_dur=%.1f sub_file=%s",
                        source[:120], start_pos, expected_duration, sub_file)
 
@@ -78,7 +74,7 @@ class VideoPlayer(QObject):
         self._seek_last_dur = None
 
         # Create new instance, then set pending_seek
-        self._create_mpv()
+        self._create_mpv(http_header_fields)
         self._pending_seek = start_pos
         self._timer.start(33)
 

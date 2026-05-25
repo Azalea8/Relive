@@ -1,4 +1,4 @@
-"""弹幕采集器 — 管理 Node.js 子进程，读取 stdout 解析 JSON"""
+"""弹幕采集器 — 管理 Go 子进程，读取 stdout 解析 JSON"""
 import json
 import os
 import subprocess
@@ -13,17 +13,13 @@ log = _log("danmaku")
 
 if getattr(sys, 'frozen', False):
     _EXE_DIR = os.path.dirname(sys.executable)
-    _NODE_CMD = os.path.join(_EXE_DIR, 'bin', 'node.exe')
-    _DOUYU_JS = os.path.join(_EXE_DIR, 'danmaku', 'douyu_worker.js')
-    _HUYA_JS = os.path.join(_EXE_DIR, 'danmaku', 'huya_worker.js')
+    _DANMAKU_GO_EXE = os.path.join(_EXE_DIR, 'bin', 'danmaku_worker.exe')
 else:
-    _NODE_CMD = 'node'
-    _DOUYU_JS = str(Path(__file__).parent / 'douyu_worker.js')
-    _HUYA_JS = str(Path(__file__).parent / 'huya_worker.js')
+    _DANMAKU_GO_DIR = str(Path(__file__).parent / 'danmaku_go')
 
 
 class DanmakuCollector(QObject):
-    """管理 Node.js 子进程，解析弹幕 JSON 并发射信号"""
+    """管理 Go 子进程，解析弹幕 JSON 并发射信号"""
 
     message_received = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
@@ -39,10 +35,13 @@ class DanmakuCollector(QObject):
         if self._running:
             self.stop()
 
-        worker_js = _HUYA_JS if platform == "huya" else _DOUYU_JS
+        cmd, cwd = self._go_cmd(platform, room_id)
+
+        if not cmd:
+            return
+
         log.info("[START] starting danmaku worker for room=%s platform=%s", room_id, platform)
 
-        cmd = [_NODE_CMD, worker_js, room_id]
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
@@ -52,15 +51,12 @@ class DanmakuCollector(QObject):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                cwd=cwd,
                 creationflags=creationflags,
             )
-        except FileNotFoundError:
-            log.error("[START] node executable not found")
-            self.error_occurred.emit("Node.js 未安装，弹幕功能不可用")
-            return
-        except Exception as e:
-            log.error("[START] Popen failed: %s", e)
-            self.error_occurred.emit(str(e))
+        except FileNotFoundError as e:
+            log.error("[START] executable not found: %s", e)
+            self.error_occurred.emit(f"弹幕worker未找到: {e}")
             return
 
         self._running = True
@@ -76,6 +72,21 @@ class DanmakuCollector(QObject):
         self._stderr_thread.start()
 
         log.info("[START] danmaku worker started, PID=%d", self._process.pid)
+
+    def _go_cmd(self, platform: str, room_id: str) -> tuple[list[str], str] | tuple[None, None]:
+        if platform not in ("douyin", "douyu"):
+            log.info("[START] danmaku not supported for platform=%s", platform)
+            return None, None
+        if getattr(sys, 'frozen', False):
+            if os.path.isfile(_DANMAKU_GO_EXE):
+                return [_DANMAKU_GO_EXE, platform, room_id], None
+        else:
+            if os.path.isdir(_DANMAKU_GO_DIR):
+                log.info("[START] running %s worker via go run", platform)
+                return ["go", "run", ".", platform, room_id], _DANMAKU_GO_DIR
+        log.error("[START] danmaku worker not found (compile danmaku_go first)")
+        self.error_occurred.emit("弹幕worker未编译, 请先安装Go并编译")
+        return None, None
 
     def stop(self):
         self._running = False

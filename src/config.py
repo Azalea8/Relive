@@ -54,6 +54,9 @@ CONFIG_PATH = os.path.join(_BASE, "config.json")
 # Default Douyu quality
 DEFAULT_QUALITY = "origin"
 
+# Bilibili login cookie for original quality (e.g. "SESSDATA=xxx; bili_jct=xxx; DedeUserID=xxx; buvid3=xxx")
+BILIBILI_COOKIE = ""
+
 # Danmaku rendering
 DANMAKU_FONT_SIZE = 36
 DANMAKU_DURATION = 14.0      # scroll duration (seconds)
@@ -88,7 +91,8 @@ def _load_user_config():
                 "DANMAKU_FONT_SIZE", "DANMAKU_DURATION",
                 "DANMAKU_OPACITY", "DANMAKU_DM_RATE",
                 "RENDER_PRESET", "RENDER_HW_QUALITY",
-                "RENDER_CRF", "RENDER_AUDIO_BITRATE"):
+                "RENDER_CRF", "RENDER_AUDIO_BITRATE",
+                "BILIBILI_COOKIE"):
         if key in cfg:
             globals()[key] = cfg[key]
 

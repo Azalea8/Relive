@@ -6,8 +6,7 @@ import tempfile
 from PyQt6.QtCore import QThread, pyqtSignal
 from src import config
 from src.logger import get as _log
-from src.recording import douyu_stream_url
-from src.recording import huya_stream_url
+from src.recording import PLATFORMS
 from src.danmaku import render_with_fallback, get_video_duration
 
 _worker_log = _log("export")
@@ -18,18 +17,14 @@ class StreamWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, room_id: str, quality: str, platform: str = "douyu"):
+    def __init__(self, room_id: str, platform: str = "douyu"):
         super().__init__()
         self.room_id = room_id
-        self.quality = quality
         self.platform = platform
 
     def run(self):
         try:
-            if self.platform == "huya":
-                url = huya_stream_url.get_stream_url(self.room_id, self.quality)
-            else:
-                url = douyu_stream_url.get_stream_url(self.room_id, self.quality)
+            url = PLATFORMS[self.platform].get_stream_url(self.room_id)
             self.finished.emit(url or "")
         except Exception as e:
             self.error.emit(str(e))

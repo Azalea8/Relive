@@ -49,7 +49,7 @@ class FFmpegRecorder(QObject):
         self._health_timer.timeout.connect(self._check_health)
         self._health_timer.start(5000)
 
-    def start(self, stream_url: str):
+    def start(self, stream_url: str, http_headers: str = ""):
         if self._running:
             log.info("[START] stopping existing FFmpeg first")
             self.stop()
@@ -68,6 +68,10 @@ class FFmpegRecorder(QObject):
             config.FFMPEG_PATH,
             "-loglevel", "warning",
             "-y",
+        ]
+        if http_headers:
+            cmd += ["-headers", http_headers]
+        cmd += [
             "-i", clean_url,
             "-sn",          # skip subtitle tracks (Huya FLV carries WebVTT)
             "-c", "copy",

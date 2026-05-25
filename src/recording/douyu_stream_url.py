@@ -16,13 +16,13 @@ HEADERS = {
     "Referer": "https://www.douyu.com/",
 }
 
-QUALITY_MAP = {
-    "origin": "0",
-    "hd": "2",
-    "sd": "1",
-    "ld": "1",
-}
+RECORD_HEADERS = (
+    
+)
 
+MPV_HEADER_FIELDS = (
+    
+)
 
 def check_live(room_id: str) -> bool:
     """Check if Douyu room is live."""
@@ -36,8 +36,8 @@ def check_live(room_id: str) -> bool:
         return False
 
 
-def get_stream_url(room_id: str, quality: str = "origin") -> str | None:
-    """Get Douyu live stream URL with auth signature. Returns None if not live."""
+def get_stream_url(room_id: str) -> str | None:
+    """Get Douyu live stream URL (source quality). Returns None if not live."""
     try:
         with httpx.Client(timeout=15, follow_redirects=True) as http:
             # 1. Check live status
@@ -54,10 +54,9 @@ def get_stream_url(room_id: str, quality: str = "origin") -> str | None:
             # 3. Compute auth
             ts, auth = _compute_auth(room_id, white)
 
-            # 4. Request stream
-            rate = QUALITY_MAP.get(quality, "0")
+            # 4. Request stream (rate=0 = source)
             params = {
-                "rate": rate,
+                "rate": "0",
                 "ver": "219032101",
                 "iar": "0",
                 "ive": "0",
@@ -89,7 +88,7 @@ def get_stream_url(room_id: str, quality: str = "origin") -> str | None:
 
             if rtmp_url and rtmp_live:
                 stream_url = f"{rtmp_url}/{rtmp_live}"
-                log.info("room %s: got stream (rate=%s)", room_id, rate)
+                log.info("room %s: got stream", room_id)
                 return stream_url
 
             log.warning("room %s: no stream URL found", room_id)

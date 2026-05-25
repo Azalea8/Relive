@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from src.playback.video_player import VideoPlayer
 from src.recording.ffmpeg_recorder import FFmpegRecorder
+from src.recording import PLATFORMS
 from src.playback.cache_manager import CacheManager
 from src.danmaku import DanmakuCollector, DanmakuManager, AssWriter, danmaku_to_ass, export_clip_ass
 from src.logger import get as _log
@@ -30,7 +31,18 @@ from src import config
 from src.ui.slider import SeekSlider, DensityOverlay
 from src.ui.workers import StreamWorker, ExportWorker, RenderWorker
 
-log = _log("ui")# Main Window
+log = _log("ui")
+
+
+def _parse_cookie_fields(cookie: str) -> dict[str, str]:
+    result = {}
+    for part in cookie.replace("; ", ";").split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            result[k.strip()] = v.strip()
+    return result
+
+# Main Window
 # ---------------------------------------------------------------------------
 
 _STYLESHEET = """
@@ -247,8 +259,9 @@ class MainWindow(QMainWindow):
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
 
+        self._platform_keys = ["douyu", "huya", "bilibili", "douyin"]
         self._platform_combo = QComboBox()
-        self._platform_combo.addItems(["斗鱼"])
+        self._platform_combo.addItems(["斗鱼", "虎牙", "B站", "抖音"])
         self._platform_combo.setMinimumWidth(64)
         self._platform_combo.setStyleSheet("font-size: 13px;")
         top_row.addWidget(self._platform_combo)
@@ -260,16 +273,11 @@ class MainWindow(QMainWindow):
         room_layout.setSpacing(4)
         self._room_combo = QComboBox()
         self._room_combo.setEditable(True)
-        self._room_combo.setPlaceholderText("斗鱼房间号")
+        self._room_combo.setPlaceholderText("房间号")
         self._room_combo.setMinimumWidth(160)
         self._room_combo.lineEdit().returnPressed.connect(self._on_connect)
         room_layout.addWidget(self._room_combo)
 
-        self._quality_combo = QComboBox()
-        self._quality_combo.addItems(["原画", "高清", "流畅"])
-        self._quality_combo.setCurrentIndex(0)
-        self._quality_combo.setMinimumWidth(80)
-        room_layout.addWidget(self._quality_combo)
 
         self._btn_connect = QPushButton("连接")
         self._btn_connect.setObjectName("btn_connect")
@@ -454,6 +462,9 @@ class MainWindow(QMainWindow):
             self._disconnect()
             return
 
+        if self._platform() == "bilibili":
+            self._check_bilibili_cookie()
+
         # Clear stale cache from previous session before reconnecting
         self._clean_cache()
         self._cache._cached_total = 0.0
@@ -461,20 +472,89 @@ class MainWindow(QMainWindow):
         self._slider.setRange(0, 0)
 
         self._room_id = room_id
-        quality_map = {0: "origin", 1: "hd", 2: "sd"}
-        quality = quality_map.get(self._quality_combo.currentIndex(), "origin")
 
         self._btn_connect.setEnabled(False)
         self._status_label.setText("连接中...")
         self._status_label.setStyleSheet("color: #f6447f; font-size: 12px;")
 
-        self._stream_worker = StreamWorker(room_id, quality, self._platform())
+        self._stream_worker = StreamWorker(room_id, self._platform())
         self._stream_worker.finished.connect(self._on_stream_url)
         self._stream_worker.error.connect(self._on_stream_error)
         self._stream_worker.start()
 
     def _platform(self) -> str:
-        return "huya" if self._platform_combo.currentIndex() == 1 else "douyu"
+        return self._platform_keys[self._platform_combo.currentIndex()]
+
+    def _record_headers(self) -> str:
+        return PLATFORMS[self._platform()].RECORD_HEADERS
+
+    def _mpv_headers(self) -> str:
+        return PLATFORMS[self._platform()].MPV_HEADER_FIELDS
+
+    def _check_bilibili_cookie(self):
+        if config.BILIBILI_COOKIE.strip():
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("B站直播")
+        box.setText(
+            "B站未登录时只能获取720P超清画质。\n\n"
+            "如需原画/4K等更高画质，请从浏览器复制登录Cookie。"
+        )
+        box.setInformativeText("是否现在输入Cookie？")
+        btn_no = box.addButton("不登录继续", QMessageBox.ButtonRole.AcceptRole)
+        btn_yes = box.addButton("输入Cookie", QMessageBox.ButtonRole.ActionRole)
+        box.setDefaultButton(btn_no)
+        box.exec()
+
+        if box.clickedButton() == btn_yes:
+            self._show_cookie_dialog()
+
+    def _show_cookie_dialog(self):
+        from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
+
+        parsed = _parse_cookie_fields(config.BILIBILI_COOKIE)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("输入B站Cookie")
+        layout = QVBoxLayout(dlg)
+        form = QFormLayout()
+
+        fields = {}
+        for key, label in [("SESSDATA", "SESSDATA"), ("bili_jct", "bili_jct"),
+                           ("DedeUserID", "DedeUserID"), ("buvid3", "buvid3")]:
+            le = QLineEdit()
+            le.setText(parsed.get(key, ""))
+            le.setMinimumWidth(360)
+            form.addRow(label, le)
+            fields[key] = le
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            parts = [f"{k}={fields[k].text().strip()}" for k in fields if fields[k].text().strip()]
+            if parts:
+                self._save_bilibili_cookie("; ".join(parts))
+
+    def _save_bilibili_cookie(self, cookie: str):
+        import json
+        config.BILIBILI_COOKIE = cookie
+        cfg = {}
+        try:
+            if os.path.exists(config.CONFIG_PATH):
+                with open(config.CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+        cfg["BILIBILI_COOKIE"] = cookie
+        with open(config.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        log.info("[BILI] cookie saved to %s", config.CONFIG_PATH)
 
     def _on_stream_url(self, url: str):
         if not url:
@@ -490,7 +570,7 @@ class MainWindow(QMainWindow):
 
         # Start FFmpeg recorder
         log.info("[CONNECT] starting FFmpeg recorder...")
-        self._recorder.start(url)
+        self._recorder.start(url, self._record_headers())
 
         # Prepare danmaku ASS before mpv init
         os.makedirs(config.DANMAKU_DIR, exist_ok=True)
@@ -503,7 +583,7 @@ class MainWindow(QMainWindow):
 
         # Start mpv live preview with ASS subtitle
         log.info("[CONNECT] starting mpv live preview with sub_file=%s", self._danmaku_ass_path)
-        self._player.reinitialize(url, sub_file=self._danmaku_ass_path)
+        self._player.reinitialize(url, sub_file=self._danmaku_ass_path, http_header_fields=self._mpv_headers())
         self._is_live_mode = True
         self._danmaku_live_start = time.time()  # reset danmaku timing for new live playback
         log.info("[CONNECT] live mode active, recorder_running=%s", self._recorder.is_running())
@@ -645,11 +725,9 @@ class MainWindow(QMainWindow):
         if not self._connected:
             log.warning("[RECONNECT] not connected, abort")
             return
-        quality_map = {0: "origin", 1: "hd", 2: "sd"}
-        quality = quality_map.get(self._quality_combo.currentIndex(), "origin")
-        log.info("[RECONNECT] fetching new URL for room=%s quality=%s", self._room_id, quality)
+        log.info("[RECONNECT] fetching new URL for room=%s", self._room_id)
 
-        self._stream_worker = StreamWorker(self._room_id, quality, self._platform())
+        self._stream_worker = StreamWorker(self._room_id, self._platform())
         self._stream_worker.finished.connect(self._on_reconnect_url)
         self._stream_worker.error.connect(lambda msg: (
             log.error("[RECONNECT] stream worker error: %s", msg),
@@ -671,7 +749,7 @@ class MainWindow(QMainWindow):
                 except OSError:
                     pass
             os.makedirs(config.SEGMENT_DIR, exist_ok=True)
-            self._recorder.start(url)
+            self._recorder.start(url, self._record_headers())
         else:
             log.warning("[RECONNECT] empty URL, will retry")
             self._try_reconnect()
@@ -863,9 +941,7 @@ class MainWindow(QMainWindow):
         # Always refresh URL before going live (tokens expire)
         self._btn_live.setEnabled(False)
         self._btn_live.setText("刷新中...")
-        quality_map = {0: "origin", 1: "hd", 2: "sd"}
-        quality = quality_map.get(self._quality_combo.currentIndex(), "origin")
-        self._go_live_worker = StreamWorker(self._room_id, quality, self._platform())
+        self._go_live_worker = StreamWorker(self._room_id, self._platform())
         self._go_live_worker.finished.connect(self._on_go_live_url)
         self._go_live_worker.error.connect(self._on_go_live_error)
         self._go_live_worker.start()
@@ -903,7 +979,7 @@ class MainWindow(QMainWindow):
         self._ass_writer = AssWriter(width=1920, height=1080)
         self._ass_writer.open_live(self._danmaku_ass_path)
 
-        self._player.reinitialize(url, sub_file=self._danmaku_ass_path)
+        self._player.reinitialize(url, sub_file=self._danmaku_ass_path, http_header_fields=self._mpv_headers())
 
         if self._danmaku_enabled:
             self._danmaku_reload_timer.start(1000)
