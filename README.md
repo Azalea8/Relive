@@ -131,6 +131,7 @@ ReLive/
 ├── bin/
 │   ├── libmpv-2.dll               # mpv 动态库
 │   ├── ffmpeg.exe                 # FFmpeg
+│   ├── ffprobe.exe                # ffprobe（视频时长检测）
 │   └── danmaku_worker.exe         # Go 弹幕采集（编译产出）
 ├── docs/
 │   ├── architecture.md            # 架构设计
