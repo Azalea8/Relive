@@ -12,7 +12,7 @@ ReLive 专用 — 录制/HLS 切片/拼接/ASS 烧录/硬编导出。
 
 ```bash
 ./configure \
-    --prefix=./ffmpeg_build \
+    --prefix=./ff_build \
     --disable-everything \
     --enable-ffmpeg \
     --enable-ffprobe \
@@ -31,8 +31,8 @@ ReLive 专用 — 录制/HLS 切片/拼接/ASS 烧录/硬编导出。
     --enable-dxva2 \
     --enable-hwaccel=h264_d3d11va,h264_dxva2,hevc_d3d11va,hevc_dxva2 \
     --enable-demuxer=flv,hls,mpegts,mov,matroska,concat,ass,subrip,webvtt \
-    --enable-muxer=flv,hls,mpegts,mov,matroska,segment,null \
-    --enable-protocol=file,concat,hls,http,https,tls,crypto \
+    --enable-muxer=flv,hls,mpegts,mp4,matroska,segment,null \
+    --enable-protocol=file,concat,hls,http,https,tls,,pipe,crypto \
     --enable-bsf=h264_mp4toannexb,aac_adtstoasc,hevc_mp4toannexb,extract_extradata \
     --enable-parser=h264,hevc,aac,mpegaudio \
     --enable-decoder=h264,hevc,aac,mp3float,ssa,subrip,webvtt,mov_text \
