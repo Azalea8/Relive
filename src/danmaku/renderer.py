@@ -41,7 +41,7 @@ def _encoder_args(encoder: str) -> list[str]:
 
     Called at render time so config.json changes take effect immediately.
     """
-    if encoder in ("libx264", "libx265"):
+    if encoder in ("libx264"):
         return [
             "-preset", config.RENDER_PRESET,
             "-crf", str(config.RENDER_CRF),
@@ -268,9 +268,6 @@ def render_with_fallback(
     encoders = [
         "h264_nvenc",        # NVIDIA HW
         "h264_amf",          # AMD Windows
-        "h264_qsv",          # Intel QuickSync
-        "h264_videotoolbox", # macOS
-        "h264_vaapi",        # Linux VAAPI
         "libx264",           # CPU fallback (CRF+preset)
     ]
     total = len(encoders)
