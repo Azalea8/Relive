@@ -1,7 +1,7 @@
 # ReLive 性能审计报告
 
 > 审计日期: 2026-05-20  
-> 审计范围: Python + Node.js 全链路  
+> 审计范围: Python + Go 全链路  
 > 录制规格: 4s/segment, hls_list_size=1800, 2 小时录制 ≈ 1800 segments
 
 ---
