@@ -82,12 +82,18 @@ def get_stream_url(room_id: str) -> str | None:
 
             stream_list, multi_stream_info = data
 
+            cdns = [s[0] for s in stream_list]
+            bitrates = [s.get("iBitRate", "?") for s in multi_stream_info]
+            log.info("room %s: available CDNs=%s bitrates=%s", room_id, cdns, bitrates)
+
             stream = _pick_cdn(stream_list, prefer="TX")
             if not stream:
                 log.warning("room %s: no stream available", room_id)
                 return None
 
             cdn_type, stream_name, hls_url, suffix, anti_code = stream
+            best_br = _source_bitrate(multi_stream_info)
+            log.info("room %s: selected CDN=%s bitrate=%s", room_id, cdn_type, "source" if best_br == 0 else f"{best_br}k")
 
             qs = {k: v for k, v in dict(urllib.parse.parse_qsl(anti_code)).items()
                   if k in _STREAM_PARAM_KEYS}
@@ -99,7 +105,7 @@ def get_stream_url(room_id: str) -> str | None:
                 ctype=qs.get("ctype", "huya_live"),
                 ws_time=qs.get("wsTime", ""),
                 stream_name=stream_name,
-                i_bit_rate=_source_bitrate(multi_stream_info),
+                i_bit_rate=best_br,
             )
             full_url = f"{url}?{urllib.parse.urlencode(params)}"
             log.info("room %s: got FLV stream (%s)", room_id, cdn_type)

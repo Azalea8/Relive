@@ -48,13 +48,18 @@ def get_stream_url(room_id: str) -> str | None:
     try:
         room = _extract_room(room_id)
         if not room:
+            log.warning("room %s: could not extract room data", room_id)
             return None
 
-        if room.get("status") != _STATUS_LIVE:
+        status = room.get("status")
+        log.info("room %s: status=%s", room_id, status)
+
+        if status != _STATUS_LIVE:
             log.info("room %s: not live", room_id)
             return None
 
         flv = room.get("stream_url", {}).get("flv_pull_url", {})
+        log.info("room %s: available qualities: %s", room_id, list(flv.keys()))
         # Quality order: FULL_HD1 > HD1 > SD1 > SD2
         for key in ("FULL_HD1", "HD1", "SD1", "SD2"):
             url = flv.get(key)
@@ -77,6 +82,7 @@ def _extract_room(room_id: str) -> dict | None:
         resp = http.get(f"https://live.douyin.com/{room_id}", headers=HEADERS)
         html = resp.text
 
+    found_flv = False
     for m in re.finditer(r"self\.__pace_f\.push\((\[\d+),", html):
         start = m.start(1)
         depth = 0
@@ -93,6 +99,7 @@ def _extract_room(room_id: str) -> dict | None:
         content = html[start:end]
         if "flv_pull_url" not in content:
             continue
+        found_flv = True
 
         try:
             data = json.loads(content)
@@ -111,4 +118,6 @@ def _extract_room(room_id: str) -> dict | None:
                 room_store = item["state"].get("roomStore", {})
                 return room_store.get("roomInfo", {}).get("room", {})
 
+    if not found_flv:
+        log.warning("room %s: flv_pull_url not found in page", room_id)
     return None

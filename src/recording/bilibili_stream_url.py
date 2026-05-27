@@ -86,13 +86,20 @@ def get_stream_url(room_id: str) -> str | None:
                 return None
 
             live_data = data.get("data", {})
-            if live_data.get("live_status") != 1:
+            live_status = live_data.get("live_status")
+            log.info("room %s: live_status=%s", room_id, live_status)
+
+            if live_status != 1:
                 log.info("room %s: not live", room_id)
                 return None
 
-            streams = (live_data.get("playurl_info", {})
-                       .get("playurl", {})
-                       .get("stream", []))
+            playurl = live_data.get("playurl_info", {}).get("playurl", {})
+            current_qn = playurl.get("current_qn", "?")
+            accept_qn = playurl.get("accept_qn", [])
+            qn_desc = [f"{q['qn']}({q['desc']})" for q in playurl.get("g_qn_desc", [])]
+            log.info("room %s: current_qn=%s accept_qn=%s qn_desc=%s", room_id, current_qn, accept_qn, qn_desc)
+
+            streams = playurl.get("stream", [])
 
             for s in streams:
                 if s.get("protocol_name") != "http_hls":
@@ -108,7 +115,7 @@ def get_stream_url(room_id: str) -> str | None:
                             continue
                         url_info = url_infos[0]
                         full_url = f"{url_info['host']}{codec['base_url']}{url_info['extra']}"
-                        log.info("room %s: got HLS stream", room_id)
+                        log.info("room %s: got HLS stream (qn=%s)", room_id, codec.get("current_qn", "?"))
                         return full_url
 
             log.warning("room %s: no matching HLS TS stream", room_id)

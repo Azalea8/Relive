@@ -44,7 +44,10 @@ def get_stream_url(room_id: str) -> str | None:
             room_resp = http.get(f"https://www.douyu.com/betard/{room_id}", headers=HEADERS)
             room_data = room_resp.json().get("room", {})
 
-            if room_data.get("show_status") != 1:
+            show_status = room_data.get("show_status")
+            log.info("room %s: show_status=%s", room_id, show_status)
+
+            if show_status != 1:
                 log.info("room %s: not live", room_id)
                 return None
 
