@@ -1004,9 +1004,8 @@ class MainWindow(QMainWindow):
         if msg_type != "chat":
             log.debug("[DANMAKU_LIVE] skip non-chat: type=%s", msg_type)
             return
-        # Use wall-clock time from most recent live playback start
-        # (resets on each go-live so timestamps align with mpv's new stream position)
-        elapsed = time.time() - self._danmaku_live_start
+        # Use danmaku server timestamp to avoid Qt event-loop delay skew
+        elapsed = (msg.get("timestamp_ms") / 1000.0) - self._danmaku_live_start
         content = msg.get("content", "")
         item = self._ass_writer.add(
             time_s=elapsed,
