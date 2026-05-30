@@ -238,7 +238,7 @@ class AssWriter:
         self._live_path = ""
 
 
-def danmaku_to_ass(ndjson_path: str, start_time_ms: float, output_path: str, time_offset: float = -3,
+def danmaku_to_ass(ndjson_path: str, start_time_ms: float, output_path: str, time_offset: float = -1.5,
                    width: int = 1920, height: int = 1080,
                    time_start: float = 0.0, time_end: float = 0.0,
                    base_offset_sec: float = 0.0, **kwargs) -> int:

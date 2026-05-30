@@ -5,7 +5,7 @@ import tempfile
 import time
 from datetime import datetime
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PySide6.QtCore import QObject, QTimer, Signal
 from src.logger import get as _log
 from src import config
 
@@ -17,7 +17,7 @@ SNAPSHOT_M3U8 = os.path.join(config.SEGMENT_DIR, "snapshot.m3u8")
 class CacheManager(QObject):
     """Tracks segment count / total duration / time bounds from FFmpeg's HLS m3u8."""
 
-    segments_changed = pyqtSignal()
+    segments_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)

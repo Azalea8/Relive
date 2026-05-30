@@ -3,7 +3,7 @@ import os
 import subprocess
 import tempfile
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 from src import config
 from src.logger import get as _log
 from src.recording import PLATFORMS
@@ -14,8 +14,8 @@ _worker_log = _log("export")
 
 class StreamWorker(QThread):
     """Fetch stream URL in background."""
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
+    finished = Signal(str)
+    error = Signal(str)
 
     def __init__(self, room_id: str, platform: str = "douyu"):
         super().__init__()
@@ -32,9 +32,9 @@ class StreamWorker(QThread):
 
 class ExportWorker(QThread):
     """Concat selected segments via FFmpeg stream copy."""
-    progress = pyqtSignal(int, int)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
+    progress = Signal(int, int)
+    finished = Signal(str)
+    error = Signal(str)
 
     def __init__(self, segment_paths: list[str], output_path: str,
                  log_path: str | None = None):
@@ -123,9 +123,9 @@ class ExportWorker(QThread):
 
 class RenderWorker(QThread):
     """Burn ASS subtitles into exported video via FFmpeg subtitles filter."""
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-    progress = pyqtSignal(int, str)  # percentage (0-100), status text (e.g. "1.5x")
+    finished = Signal(str)
+    error = Signal(str)
+    progress = Signal(int, str)  # percentage (0-100), status text (e.g. "1.5x")
 
     def __init__(self, video_path: str, ass_path: str, output_path: str,
                  log_path: str | None = None):

@@ -1,8 +1,6 @@
-"""mpv player wrapper — wid embedding into PyQt6 QWidget."""
-import os
-
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QWidget
+"""mpv player wrapper — wid embedding into PySide6 QWidget."""
+from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtWidgets import QWidget
 
 import mpv
 from src.logger import get as _log
@@ -10,10 +8,10 @@ from src.logger import get as _log
 
 class VideoPlayer(QObject):
     _log = _log("mpv")
-    position_changed = pyqtSignal(float)  # seconds
-    duration_changed = pyqtSignal(float)  # seconds
-    loaded = pyqtSignal()
-    error_occurred = pyqtSignal(str)
+    position_changed = Signal(float)  # seconds
+    duration_changed = Signal(float)  # seconds
+    loaded = Signal()
+    error_occurred = Signal(str)
 
     def __init__(self, container: QWidget):
         super().__init__()
@@ -26,38 +24,34 @@ class VideoPlayer(QObject):
         self._expected_duration: float = 0.0
         self._seek_dur_stable_count = 0
         self._seek_last_dur: float | None = None
+        self._ass_path: str = ""
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._timer.start(33)  # ~30fps
         self._create_mpv()
 
-    def _create_mpv(self, http_header_fields: str = ""):
+    def _create_mpv(self):
         """Create a fresh mpv instance embedded in the container widget."""
         wid = str(int(self._container.winId()))
-        kwargs: dict = {
-            "wid": wid,
-            "keep_open": "yes",
-            "osc": "no",
-            "input_default_bindings": "no",
-            "input_vo_keyboard": "no",
-            "ytdl": "no",
-            "hwdec": "auto",
-            "hwdec_codecs": "all",
-            "log_handler": self._on_mpv_log,
-        }
-        if http_header_fields:
-            kwargs["http_header_fields"] = http_header_fields
-        self._player = mpv.MPV(**kwargs)
+        self._player = mpv.MPV(
+            wid=wid,
+            keep_open="yes",
+            script_opts="osc-visibility=never",
+            input_default_bindings="no",
+            input_vo_keyboard="no",
+            hwdec="auto",
+            hwdec_codecs="all",
+            loglevel="warn",
+            log_handler=self._on_mpv_log,
+        )
         self._log.info("mpv instance created")
 
     def reinitialize(self, source: str, start_pos: float | None = None,
-                     expected_duration: float = 0.0, sub_file: str = "",
-                     http_header_fields: str = ""):
+                     expected_duration: float = 0.0, sub_file: str = ""):
         """Destroy current mpv and create a fresh one playing `source`."""
         self._log.info("[REINIT] source=%s start_pos=%s expected_dur=%.1f sub_file=%s",
                        source[:120], start_pos, expected_duration, sub_file)
 
-        # Destroy old instance
         if self._player is not None:
             self._timer.stop()
             try:
@@ -65,7 +59,6 @@ class VideoPlayer(QObject):
             except Exception as e:
                 self._log.error("[REINIT] terminate error: %s", e)
 
-        # Reset state
         self._duration = 0.0
         self._last_position = -1.0
         self._seek_poll_count = 0
@@ -73,27 +66,20 @@ class VideoPlayer(QObject):
         self._seek_dur_stable_count = 0
         self._seek_last_dur = None
 
-        # Create new instance, then set pending_seek
-        self._create_mpv(http_header_fields)
+        self._create_mpv()
         self._pending_seek = start_pos
         self._timer.start(33)
 
-        # Load subtitle BEFORE play (matching StreamSlice behavior)
         if sub_file:
+            self._ass_path = sub_file
             self._player.sub_files = sub_file
             self._log.info("[REINIT] sub_files=%s OK", sub_file)
 
-        # Play directly — source is either a URL or a pre-built snapshot m3u8
-        is_url = source.startswith("http://") or source.startswith("https://")
-        self._log.info("[REINIT] play(%s) is_url=%s", source[:120], is_url)
-        if not is_url:
-            self._player.force_seekable = 'yes'
-            self._player.hr_seek = 'yes'
+        self._player.force_seekable = 'yes'
         self._player.play(source)
 
     def _on_mpv_log(self, loglevel, component, message):
-        if loglevel in ("error", "fatal"):
-            self._log.error("mpv [%s] %s", component or "core", message.strip())
+        self._log.error("mpv [%s] %s", component or "core", message.strip())
 
     def _poll(self):
         if self._player is None:
@@ -173,17 +159,20 @@ class VideoPlayer(QObject):
         """Load a subtitle file immediately."""
         if self._player:
             try:
+                self._ass_path = path
                 self._player.sub_files = path
                 self._log.info("set sub_files=%s OK", path)
             except Exception as e:
                 self._log.error("set sub_files failed: %s", e)
 
     def sub_reload(self):
-        if self._player:
-            try:
-                self._player.command("sub-reload", "1")
-            except Exception:
-                pass
+        if not self._player:
+            return
+        try:
+            if self._ass_path:
+                self._player.command("sub-add", self._ass_path, "select")
+        except Exception:
+            pass
 
     def speed(self) -> float:
         return self._player.speed if self._player else 1.0
