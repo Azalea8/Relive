@@ -37,7 +37,8 @@ ReLive 专用 — 录制/HLS 切片/拼接/ASS 烧录/硬编导出。
     --enable-parser=h264,hevc,aac,mpegaudio \
     --enable-decoder=h264,hevc,aac,mp3float,ssa,subrip,webvtt,mov_text \
     --enable-encoder=libx264,aac,h264_nvenc,h264_amf \
-    --enable-filter=ass,subtitles,scale,fps,format,trim,setpts,aformat,amix,null,anull,buffer,buffersink \
+    --enable-filter=ass,subtitles,scale,fps,format,trim,setpts,aformat,amix,null,anull,buffer,buffersink,aresample \
+    --enable-swresample \
     --enable-indev=lavfi \
     --pkg-config-flags="--static" \
     --extra-cflags="-I/mingw64/include" \

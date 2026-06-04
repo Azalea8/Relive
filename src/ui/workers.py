@@ -73,7 +73,10 @@ class ExportWorker(QThread):
                 config.FFMPEG_PATH, "-y",
                 "-f", "concat", "-safe", "0",
                 "-i", list_path,
-                "-c", "copy",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-af", "aresample=async=1",
+                "-movflags", "+faststart",
                 self._output,
             ]
             _worker_log.info("export: %s", " ".join(cmd))

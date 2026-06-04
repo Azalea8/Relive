@@ -68,6 +68,7 @@ class FFmpegRecorder(QObject):
             config.FFMPEG_PATH,
             "-loglevel", "warning",
             "-y",
+            "-fflags", "+genpts",
         ]
         if http_headers:
             cmd += ["-headers", http_headers]

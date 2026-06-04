@@ -135,6 +135,28 @@ def _log_write(log_path: Optional[str], msg: str) -> None:
     except OSError:
         pass
 
+def get_video_fps(path: str) -> float:
+    result = subprocess.run(
+        [
+            config.FFPROBE_PATH,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=avg_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    fps_str = result.stdout.strip()
+
+    if fps_str == "0/0":
+        return 30.0
+    
+    num, den = result.stdout.strip().split("/")
+    return float(num) / float(den)
 
 def render_with_danmaku(
     video_path: str,
@@ -160,6 +182,8 @@ def render_with_danmaku(
     """
     ass_escaped = _escape_ass_path(ass_path)
 
+    # video_fps = get_video_fps(video_path)
+
     cmd = [
         config.FFMPEG_PATH, "-y",
         "-i", video_path,
@@ -168,6 +192,7 @@ def render_with_danmaku(
         *_encoder_args(encoder),
         "-c:a", "aac",
         "-b:a", config.RENDER_AUDIO_BITRATE,
+        "-af", "aresample=async=1:first_pts=0",
         "-movflags", "+faststart",
         "-progress", "pipe:2",
         "-nostats",
