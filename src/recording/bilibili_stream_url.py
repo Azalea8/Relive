@@ -94,13 +94,14 @@ def get_stream_url(room_id: str) -> str | None:
                 return None
 
             playurl = live_data.get("playurl_info", {}).get("playurl", {})
-            current_qn = playurl.get("current_qn", "?")
-            accept_qn = playurl.get("accept_qn", [])
+            expected_qn = live_data.get("playurl_info", {}).get("expected_quality", {}).get("qn", "?")
             qn_desc = [f"{q['qn']}({q['desc']})" for q in playurl.get("g_qn_desc", [])]
-            log.info("room %s: current_qn=%s accept_qn=%s qn_desc=%s", room_id, current_qn, accept_qn, qn_desc)
+            log.info("room %s: expected_qn=%s qn_desc=%s", room_id, expected_qn, qn_desc)
 
             streams = playurl.get("stream", [])
 
+            best_url = ""
+            best_qn = -1
             for s in streams:
                 if s.get("protocol_name") != "http_hls":
                     continue
@@ -108,15 +109,17 @@ def get_stream_url(room_id: str) -> str | None:
                     if fmt.get("format_name") != "ts":
                         continue
                     for codec in fmt.get("codec", []):
-                        if codec.get("codec_name") != "avc":
-                            continue
+                        qn = codec.get("current_qn", 0)
                         url_infos = codec.get("url_info", [])
-                        if not url_infos:
+                        if not url_infos or qn <= best_qn:
                             continue
                         url_info = url_infos[0]
-                        full_url = f"{url_info['host']}{codec['base_url']}{url_info['extra']}"
-                        log.info("room %s: got HLS stream (qn=%s)", room_id, codec.get("current_qn", "?"))
-                        return full_url
+                        best_qn = qn
+                        best_url = f"{url_info['host']}{codec['base_url']}{url_info['extra']}"
+
+            if best_url:
+                log.info("room %s: got HLS stream (qn=%s)", room_id, best_qn)
+                return best_url
 
             log.warning("room %s: no matching HLS TS stream", room_id)
             return None

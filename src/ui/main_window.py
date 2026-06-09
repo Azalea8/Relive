@@ -1,22 +1,18 @@
 """ReLive main window — live stream DVR with mpv playback."""
 import json
 import os
+import subprocess
 import time
 
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSlider,
-    QStyle,
-    QStyleOptionSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +21,7 @@ from src.playback.video_player import VideoPlayer
 from src.recording.ffmpeg_recorder import FFmpegRecorder
 from src.recording import PLATFORMS
 from src.playback.cache_manager import CacheManager
+from src.playback import local_server
 from src.danmaku import DanmakuCollector, DanmakuManager, AssWriter, danmaku_to_ass, export_clip_ass
 from src.logger import get as _log
 from src import config
@@ -239,7 +236,7 @@ class MainWindow(QMainWindow):
         # Danmaku state
         self._danmaku_enabled = True
         self._danmaku_ass_path = ""
-        self._danmaku_live_start: float = 0.0
+        self._http_port: int = 0
         self._dvr_ass_path = ""
 
         # --- central widget ---
@@ -462,7 +459,7 @@ class MainWindow(QMainWindow):
             self._disconnect()
             return
 
-        if self._platform() == "bilibili":
+        if self._platform_id() == "bilibili":
             self._check_bilibili_cookie()
 
         # Clear stale cache from previous session before reconnecting
@@ -477,19 +474,13 @@ class MainWindow(QMainWindow):
         self._status_label.setText("连接中...")
         self._status_label.setStyleSheet("color: #f6447f; font-size: 12px;")
 
-        self._stream_worker = StreamWorker(room_id, self._platform())
+        self._stream_worker = StreamWorker(room_id, self._platform_id())
         self._stream_worker.finished.connect(self._on_stream_url)
         self._stream_worker.error.connect(self._on_stream_error)
         self._stream_worker.start()
 
-    def _platform(self) -> str:
+    def _platform_id(self) -> str:
         return self._platform_keys[self._platform_combo.currentIndex()]
-
-    def _record_headers(self) -> str:
-        return PLATFORMS[self._platform()].RECORD_HEADERS
-
-    def _mpv_headers(self) -> str:
-        return PLATFORMS[self._platform()].MPV_HEADER_FIELDS
 
     def _check_bilibili_cookie(self):
         if config.BILIBILI_COOKIE.strip():
@@ -511,7 +502,7 @@ class MainWindow(QMainWindow):
             self._show_cookie_dialog()
 
     def _show_cookie_dialog(self):
-        from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
+        from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
 
         parsed = _parse_cookie_fields(config.BILIBILI_COOKIE)
 
@@ -569,27 +560,48 @@ class MainWindow(QMainWindow):
         self._stream_url = url
 
         # Start FFmpeg recorder
+        platform = self._platform_id()
+        headers = PLATFORMS[platform].RECORD_HEADERS
         log.info("[CONNECT] starting FFmpeg recorder...")
-        self._recorder.start(url, self._record_headers())
+        self._recorder.start(url, headers)
 
-        # Prepare danmaku ASS before mpv init
+        # Wait for first segment — mpv starts from 0, always 1 segment behind live
+        self._status_label.setText("等待视频流...")
+        log.info("[CONNECT] waiting for first segment...")
+        for _ in range(60):  # 30s timeout
+            time.sleep(0.5)
+            try:
+                with open(config.M3U8_PATH, "r") as f:
+                    m3u8 = f.read()
+                if any(l.endswith(".ts") for l in m3u8.splitlines()):
+                    log.info("[CONNECT] first segment ready")
+                    break
+            except (OSError, FileNotFoundError):
+                pass
+        else:
+            log.warning("[CONNECT] no segment after 30s, continuing anyway")
+
+        self._status_label.setText("录制中")
+        self._status_label.setStyleSheet("color: #10b981; font-size: 12px;")
+
+        # Start local HTTP server
+        self._http_port = local_server.start(config.SEGMENT_DIR)
+        live_url = f"http://127.0.0.1:{self._http_port}/playlist.m3u8"
+
+        # Prepare danmaku
         os.makedirs(config.DANMAKU_DIR, exist_ok=True)
         self._danmaku_manager.set_recording_start(self._recorder.start_time)
         self._danmaku_ass_path = os.path.join(config.DANMAKU_DIR, "live.ass")
         self._ass_writer = AssWriter(width=1920, height=1080)
         self._ass_writer.open_live(self._danmaku_ass_path)
-        log.info("[CONNECT] ASS created: %s exists=%s",
-                 self._danmaku_ass_path, os.path.exists(self._danmaku_ass_path))
 
-        # Start mpv live preview with ASS subtitle
-        log.info("[CONNECT] starting mpv live preview with sub_file=%s", self._danmaku_ass_path)
-        self._player.reinitialize(url, sub_file=self._danmaku_ass_path, http_header_fields=self._mpv_headers())
+        # Start mpv playing local HTTP m3u8
+        log.info("[CONNECT] starting mpv with %s", live_url)
+        self._player.reinitialize(live_url, sub_file=self._danmaku_ass_path)
         self._is_live_mode = True
-        self._danmaku_live_start = time.time()  # reset danmaku timing for new live playback
-        log.info("[CONNECT] live mode active, recorder_running=%s", self._recorder.is_running())
 
         # Start danmaku collection
-        self._danmaku_collector.start(self._room_id, self._platform())
+        self._danmaku_collector.start(self._room_id, platform)
         if self._danmaku_enabled:
             self._danmaku_reload_timer.start(1000)
 
@@ -615,6 +627,7 @@ class MainWindow(QMainWindow):
         self._danmaku_collector.stop()
         self._danmaku_manager.clear()
         self._ass_writer.close()
+        local_server.stop()
         self._player.close()
         self._time_label.setText("")
         self._btn_connect.setText("连接")
@@ -627,7 +640,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _clean_cache(self):
-        """Delete old cache from previous sessions."""
+        """Delete old cache from previous sessions. Kills orphan FFmpeg if needed."""
         import shutil
         cache = config.CACHE_DIR
         if os.path.exists(cache):
@@ -635,7 +648,29 @@ class MainWindow(QMainWindow):
                 shutil.rmtree(cache)
                 log.info("cleaned old cache: %s", cache)
             except OSError as e:
-                log.warning("failed to clean cache: %s", e)
+                log.warning("failed to clean cache (files locked): %s", e)
+                # Kill orphan FFmpeg processes that may hold file handles
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", "ffmpeg.exe"],
+                        capture_output=True, timeout=5,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                try:
+                    shutil.rmtree(cache)
+                    log.info("cleaned old cache after killing ffmpeg: %s", cache)
+                except OSError:
+                    log.warning("still failed to clean cache, will overwrite")
+                    # At minimum, remove the old m3u8 so polling starts fresh
+                    m3u8 = config.M3U8_PATH
+                    if os.path.exists(m3u8):
+                        try:
+                            os.remove(m3u8)
+                        except OSError:
+                            pass
         os.makedirs(config.CACHE_DIR, exist_ok=True)
         os.makedirs(config.SEGMENT_DIR, exist_ok=True)
 
@@ -727,7 +762,7 @@ class MainWindow(QMainWindow):
             return
         log.info("[RECONNECT] fetching new URL for room=%s", self._room_id)
 
-        self._stream_worker = StreamWorker(self._room_id, self._platform())
+        self._stream_worker = StreamWorker(self._room_id, self._platform_id())
         self._stream_worker.finished.connect(self._on_reconnect_url)
         self._stream_worker.error.connect(lambda msg: (
             log.error("[RECONNECT] stream worker error: %s", msg),
@@ -740,8 +775,6 @@ class MainWindow(QMainWindow):
             log.info("[RECONNECT] URL obtained: %s, restarting recorder. is_live=%s",
                      url[:80], self._is_live_mode)
             self._stream_url = url
-            # Clear stale video segments so the new connection's cache
-            # starts from a consistent time base.
             import shutil
             if os.path.exists(config.SEGMENT_DIR):
                 try:
@@ -749,7 +782,8 @@ class MainWindow(QMainWindow):
                 except OSError:
                     pass
             os.makedirs(config.SEGMENT_DIR, exist_ok=True)
-            self._recorder.start(url, self._record_headers())
+            headers = PLATFORMS[self._platform_id()].RECORD_HEADERS
+            self._recorder.start(url, headers)
         else:
             log.warning("[RECONNECT] empty URL, will retry")
             self._try_reconnect()
@@ -796,8 +830,7 @@ class MainWindow(QMainWindow):
             self._slider.blockSignals(False)
             self._time_label.setText("")
         else:
-            log.debug("[POS] DVR pos=%.3f slider=%d total=%.1f",
-                      seconds, int(seconds * 100), total)
+            # log.debug("[POS] DVR pos=%.3f slider=%d total=%.1f", seconds, int(seconds * 100), total)
             self._slider.blockSignals(True)
             self._slider.setValue(int(seconds * 100))
             self._slider.blockSignals(False)
@@ -890,6 +923,8 @@ class MainWindow(QMainWindow):
             if not snapshot_path:
                 log.warning("[SLIDER] write_snapshot failed, skip")
                 return
+            snapshot_name = os.path.basename(snapshot_path)
+            snapshot_url = f"http://127.0.0.1:{self._http_port}/{snapshot_name}"
             # Freeze slider range to snapshot duration
             self._dvr_frozen_duration = expected_dur
             self._slider.setRange(0, int(expected_dur * 100))
@@ -913,11 +948,11 @@ class MainWindow(QMainWindow):
                     self._dvr_ass_path, width=1920, height=1080,
                     base_offset_sec=self._base_offset_sec,
                 )
-                self._player.reinitialize(snapshot_path, start_pos=seek_to,
+                self._player.reinitialize(snapshot_url, start_pos=seek_to,
                                           expected_duration=expected_dur)
                 self._player.set_sub_file(self._dvr_ass_path)
             else:
-                self._player.reinitialize(snapshot_path, start_pos=seek_to,
+                self._player.reinitialize(snapshot_url, start_pos=seek_to,
                                           expected_duration=expected_dur)
         else:
             # DVR→DVR: snapshot already loaded, just seek
@@ -938,28 +973,8 @@ class MainWindow(QMainWindow):
             log.info("[GO_LIVE] not connected, skip")
             return
 
-        # Always refresh URL before going live (tokens expire)
-        self._btn_live.setEnabled(False)
-        self._btn_live.setText("刷新中...")
-        self._go_live_worker = StreamWorker(self._room_id, self._platform())
-        self._go_live_worker.finished.connect(self._on_go_live_url)
-        self._go_live_worker.error.connect(self._on_go_live_error)
-        self._go_live_worker.start()
-
-    def _on_go_live_url(self, url: str):
-        log.info("[GO_LIVE] URL callback: url=%s", url[:80] if url else "EMPTY")
-        if not url:
-            log.error("[GO_LIVE] failed to refresh stream URL")
-            self._status_label.setText("刷新地址失败")
-            self._status_label.setStyleSheet("color: #f6447f; font-size: 12px;")
-            self._btn_live.setText("回到直播")
-            self._btn_live.setEnabled(True)
-            return
-
-        log.info("go live: URL refreshed, new mpv instance")
-        self._stream_url = url
+        log.info("[GO_LIVE] switching mpv back to live playlist")
         self._is_live_mode = True
-        self._danmaku_live_start = time.time()  # reset timing so danmaku align with new mpv playback
         self._density_overlay.clear_density()
         self._user_interacting_slider = False
         self._btn_live.setVisible(False)
@@ -974,22 +989,19 @@ class MainWindow(QMainWindow):
         self._slider.setValue(self._slider.maximum())
         self._slider.blockSignals(False)
 
-        # Prepare live danmaku ASS before reinitialize (same order as initial connect)
         self._danmaku_ass_path = os.path.join(config.DANMAKU_DIR, "live.ass")
         self._ass_writer = AssWriter(width=1920, height=1080)
         self._ass_writer.open_live(self._danmaku_ass_path)
 
-        self._player.reinitialize(url, sub_file=self._danmaku_ass_path, http_header_fields=self._mpv_headers())
+        live_url = f"http://127.0.0.1:{self._http_port}/playlist.m3u8"
+        log.info("[GO_LIVE] reinitialize mpv with %s sub=%s", live_url, self._danmaku_ass_path)
+        self._player.reinitialize(live_url, sub_file=self._danmaku_ass_path)
 
         if self._danmaku_enabled:
+            log.info("[GO_LIVE] restarting danmaku reload timer")
             self._danmaku_reload_timer.start(1000)
-
-    def _on_go_live_error(self, msg: str):
-        self._btn_live.setText("回到直播")
-        self._btn_live.setEnabled(True)
-        log.error("go live: URL refresh error: %s", msg)
-        self._status_label.setText(f"错误: {msg}")
-        self._status_label.setStyleSheet("color: #f6447f; font-size: 12px;")
+        else:
+            log.warning("[GO_LIVE] danmaku disabled, not starting reload timer")
 
     # ------------------------------------------------------------------
     # Danmaku
@@ -997,15 +1009,18 @@ class MainWindow(QMainWindow):
 
     def _on_danmaku_live(self, msg: dict):
         msg_type = msg.get("msg_type", "unknown")
-        if not self._is_live_mode or not self._danmaku_enabled:
-            log.debug("[DANMAKU_LIVE] skip: is_live=%s enabled=%s type=%s",
-                      self._is_live_mode, self._danmaku_enabled, msg_type)
+        if not self._is_live_mode:
+            log.debug("[DANMAKU_LIVE] skip: not live mode, type=%s", msg_type)
+            return
+        if not self._danmaku_enabled:
+            log.debug("[DANMAKU_LIVE] skip: danmaku disabled, type=%s", msg_type)
             return
         if msg_type != "chat":
             log.debug("[DANMAKU_LIVE] skip non-chat: type=%s", msg_type)
             return
-        # Use danmaku server timestamp to avoid Qt event-loop delay skew
-        elapsed = (msg.get("timestamp_ms") / 1000.0) - self._danmaku_live_start
+        # Live HLS sliding window — use mpv playback position, not absolute recording time
+        pos = self._player.position()
+        elapsed = max(pos + 2, 0.0)
         content = msg.get("content", "")
         item = self._ass_writer.add(
             time_s=elapsed,
@@ -1020,7 +1035,7 @@ class MainWindow(QMainWindow):
             log.debug("[DANMAKU_LIVE] collision-dropped: text=%s", content[:30])
 
     def _on_settings(self):
-        from PyQt6.QtWidgets import (QDialog, QFormLayout, QDoubleSpinBox,
+        from PySide6.QtWidgets import (QDialog, QFormLayout, QDoubleSpinBox,
                                       QSpinBox, QDialogButtonBox, QLabel)
         dlg = QDialog(self)
         dlg.setWindowTitle("设置")
@@ -1161,7 +1176,7 @@ class MainWindow(QMainWindow):
                        and os.path.exists(self._danmaku_manager.ndjson_path))
 
         # --- Export config dialog ---
-        from PyQt6.QtWidgets import (QDialog, QFormLayout, QCheckBox,
+        from PySide6.QtWidgets import (QDialog, QFormLayout, QCheckBox,
                                       QComboBox, QDialogButtonBox, QLabel,
                                       QLineEdit, QGroupBox)
 
@@ -1435,7 +1450,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event):
-        from PyQt6.QtCore import QEvent
+        from PySide6.QtCore import QEvent
         if obj is self._video_widget and event.type() == QEvent.Type.KeyPress:
                 if event.key() == Qt.Key.Key_Escape and self._fullscreen:
                     self._exit_fullscreen()

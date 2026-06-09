@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PySide6.QtCore import QObject, QTimer, Signal
 from src.logger import get as _log
 from src import config
 
@@ -34,7 +34,7 @@ _winjob = JobObject()
 class FFmpegRecorder(QObject):
     """Manages an FFmpeg subprocess that captures a live stream into TS segments."""
 
-    state_changed = pyqtSignal(str)
+    state_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -68,6 +68,7 @@ class FFmpegRecorder(QObject):
             config.FFMPEG_PATH,
             "-loglevel", "warning",
             "-y",
+            "-fflags", "+genpts",
         ]
         if http_headers:
             cmd += ["-headers", http_headers]

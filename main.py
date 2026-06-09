@@ -9,8 +9,8 @@ else:
     _exe_dir = os.path.dirname(os.path.abspath(__file__))
     os.environ["PATH"] = _exe_dir + os.pathsep + os.path.join(_exe_dir, "bin") + os.pathsep + os.environ["PATH"]
 
-from PyQt6.QtGui import QIcon             # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtGui import QIcon             # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 from src.ui.main_window import MainWindow  # noqa: E402
 
 

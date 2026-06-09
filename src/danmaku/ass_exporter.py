@@ -8,8 +8,8 @@ from src.danmaku.ass_writer import AssWriter
 
 def export_clip_ass(ndjson_path: str, start_time_ms: float,
                     mark_in_sec: float, mark_out_sec: float,
-                    output_path: str, time_offset: float = -3,
-                    width: int = 1280, height: int = 720,
+                    output_path: str, time_offset: float = -1.5,
+                    width: int = 1980, height: int = 1080,
                     base_offset_sec: float = 0.0, **kwargs) -> int:
     """从 NDJSON 生成切片范围内的 ASS 文件
 
@@ -40,8 +40,7 @@ def export_clip_ass(ndjson_path: str, start_time_ms: float,
         except Exception:
             continue
 
-    scaled_fontsize = int(config.DANMAKU_FONT_SIZE * width / 1920)
-    writer = AssWriter(width=width, height=height, fontsize=scaled_fontsize, **kwargs)
+    writer = AssWriter(width=width, height=height, **kwargs)
 
     abs_in = mark_in_sec + base_offset_sec
     abs_out = mark_out_sec + base_offset_sec

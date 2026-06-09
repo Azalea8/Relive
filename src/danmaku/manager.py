@@ -3,7 +3,7 @@ import json
 import os
 import time
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 from src.logger import get as _log
 from src import config
 
@@ -13,7 +13,7 @@ log = _log("danmaku")
 class DanmakuManager(QObject):
     """管理弹幕数据：时间戳转换、持久化"""
 
-    danmaku_added = pyqtSignal(dict)
+    danmaku_added = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)

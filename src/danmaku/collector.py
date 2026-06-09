@@ -5,7 +5,7 @@ import subprocess
 import sys
 import threading
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 from src.logger import get as _log
 from pathlib import Path
 
@@ -21,8 +21,8 @@ else:
 class DanmakuCollector(QObject):
     """管理 Go 子进程，解析弹幕 JSON 并发射信号"""
 
-    message_received = pyqtSignal(dict)
-    error_occurred = pyqtSignal(str)
+    message_received = Signal(dict)
+    error_occurred = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -91,12 +91,22 @@ class DanmakuCollector(QObject):
     def stop(self):
         self._running = False
         if self._process and self._process.poll() is None:
-            log.info("[STOP] terminating danmaku worker PID=%d", self._process.pid)
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
+            log.info("[STOP] killing danmaku worker PID=%d", self._process.pid)
+            if os.name == "nt":
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(self._process.pid)],
+                        capture_output=True, timeout=5,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                except Exception:
+                    self._process.kill()
+            else:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
 
         if self._stdout_thread and self._stdout_thread.is_alive():
             self._stdout_thread.join(timeout=2)
