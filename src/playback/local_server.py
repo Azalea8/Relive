@@ -11,7 +11,7 @@ log = _log("httpd")
 _PORT = 18888
 _server: HTTPServer | None = None
 _server_thread: threading.Thread | None = None
-
+HTTPServer.allow_reuse_address = False
 
 class _Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -41,7 +41,8 @@ def start(root_dir: str) -> int:
         try:
             _server = HTTPServer(("127.0.0.1", port), _Handler)
             break
-        except OSError:
+        except OSError as e:
+            log.info("port %d failed: %s", port, e)
             port += 1
 
     _server_thread = threading.Thread(target=_server.serve_forever, daemon=True)
@@ -54,5 +55,6 @@ def stop():
     global _server
     if _server:
         _server.shutdown()
+        _server.server_close()
         _server = None
         log.info("HTTP server stopped")
