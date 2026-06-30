@@ -156,6 +156,6 @@ class DanmakuCollector(QObject):
                     break
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if line:
-                    log.debug("[node] %s", line)
+                    log.debug("%s", line)
         except (ValueError, OSError):
             pass

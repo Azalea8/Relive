@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +19,49 @@ import (
 )
 
 var ports = []int{8501, 8502, 8503, 8504, 8505, 8506}
+
+// 自动探测代理，结果缓存（只探测一次）
+var autoProxyFunc func(*http.Request) (*url.URL, error)
+
+func getAutoProxy() func(*http.Request) (*url.URL, error) {
+	if autoProxyFunc != nil {
+		return autoProxyFunc
+	}
+
+	// 候选代理列表（按需增删）
+	candidates := []string{
+		"http://127.0.0.1:7890",   // Clash 默认 HTTP
+		"http://127.0.0.1:10809",  // V2Ray 默认 HTTP
+		"http://127.0.0.1:1080",   // 通用
+		"socks5://127.0.0.1:7890", // 如需 SOCKS5 支持
+	}
+
+	for _, proxyStr := range candidates {
+		proxyURL, err := url.Parse(proxyStr)
+		if err != nil {
+			continue
+		}
+		host := proxyURL.Hostname()
+		port := proxyURL.Port()
+		if port == "" {
+			port = "80"
+		}
+		// 快速 TCP 探测（超时 300ms）
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 300*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			// 找到可用代理，返回 ProxyURL 函数
+			autoProxyFunc = http.ProxyURL(proxyURL)
+			log.Printf("[AUTO-PROXY] 使用代理: %s", proxyStr)
+			return autoProxyFunc
+		}
+	}
+
+	// 无代理，回退到环境变量（或 nil）
+	autoProxyFunc = http.ProxyFromEnvironment
+	log.Println("[AUTO-PROXY] 未检测到代理，将直连")
+	return autoProxyFunc
+}
 
 func init() {
 	suites := tls.InsecureCipherSuites()
@@ -30,6 +76,7 @@ func init() {
 			CipherSuites:       ids,
 		},
 		HandshakeTimeout: 10 * time.Second,
+		Proxy:            getAutoProxy(), // 代理自动探测函数
 	}
 }
 
