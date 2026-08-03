@@ -30,6 +30,9 @@ class DanmakuManager(QObject):
         self._jsonl_file = open(self._jsonl_path, "a", encoding="utf-8")
         log.info("[SET_START] start_time=%.3f file=%s", start_time, self._jsonl_path)
 
+    def set_filter(self, f):
+        self._filter = f
+
     def on_raw_message(self, raw: dict):
         ts_ms = raw.get("timestamp_ms", 0)
         offset_sec = (ts_ms / 1000.0) - self._start_time
@@ -43,6 +46,9 @@ class DanmakuManager(QObject):
         if offset_sec < 0:
             log.warning("[MSG] negative offset=%.3f, skipping (ts_ms=%d start_time=%.3f)",
                         offset_sec, ts_ms, self._start_time)
+            return
+
+        if msg_type == "chat" and hasattr(self, "_filter") and self._filter.is_blocked(raw.get("content", "")):
             return
 
         msg = dict(raw)

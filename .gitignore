@@ -17,6 +17,7 @@ bin/
 exports/
 history.json
 config.json
+danmaku_filter.txt
 
 # Node.js
 node_modules/

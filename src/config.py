@@ -50,6 +50,7 @@ FFPROBE_PATH = _FFPROBE_BIN if os.path.exists(_FFPROBE_BIN) else "ffprobe"
 # History file
 HISTORY_PATH = os.path.join(_BASE, "history.json")
 CONFIG_PATH = os.path.join(_BASE, "config.json")
+DANMAKU_FILTER_PATH = os.path.join(_BASE, "danmaku_filter.txt")
 
 # Default Douyu quality
 DEFAULT_QUALITY = "origin"

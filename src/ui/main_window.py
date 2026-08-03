@@ -23,6 +23,7 @@ from src.recording import PLATFORMS
 from src.playback.cache_manager import CacheManager
 from src.playback import local_server
 from src.danmaku import DanmakuCollector, DanmakuManager, AssWriter, danmaku_to_ass, export_clip_ass
+from src.danmaku.filter import DanmakuFilter
 from src.logger import get as _log
 from src import config
 from src.ui.slider import SeekSlider, DensityOverlay
@@ -236,6 +237,7 @@ class MainWindow(QMainWindow):
         # Danmaku state
         self._danmaku_enabled = True
         self._danmaku_ass_path = ""
+        self._danmaku_filter = DanmakuFilter(config.DANMAKU_FILTER_PATH)
         self._http_port: int = 0
         self._dvr_ass_path = ""
 
@@ -417,6 +419,7 @@ class MainWindow(QMainWindow):
         # === Danmaku components ===
         self._danmaku_collector = DanmakuCollector(self)
         self._danmaku_manager = DanmakuManager(self)
+        self._danmaku_manager.set_filter(self._danmaku_filter)
         self._ass_writer = AssWriter(width=1920, height=1080)
 
         # === Signals ===
@@ -1018,10 +1021,10 @@ class MainWindow(QMainWindow):
         if msg_type != "chat":
             log.debug("[DANMAKU_LIVE] skip non-chat: type=%s", msg_type)
             return
+        content = msg.get("content", "")
         # Live HLS sliding window — use mpv playback position, not absolute recording time
         pos = self._player.position()
         elapsed = max(pos + 2, 0.0)
-        content = msg.get("content", "")
         item = self._ass_writer.add(
             time_s=elapsed,
             text=content,
@@ -1036,10 +1039,11 @@ class MainWindow(QMainWindow):
 
     def _on_settings(self):
         from PySide6.QtWidgets import (QDialog, QFormLayout, QDoubleSpinBox,
-                                      QSpinBox, QDialogButtonBox, QLabel)
+                                      QSpinBox, QDialogButtonBox, QLabel,
+                                      QPushButton, QPlainTextEdit)
         dlg = QDialog(self)
         dlg.setWindowTitle("设置")
-        dlg.resize(360, 320)
+        dlg.resize(380, 440)
 
         layout = QVBoxLayout(dlg)
         form = QFormLayout()
@@ -1080,6 +1084,10 @@ class MainWindow(QMainWindow):
         note2 = QLabel("修改后需重启应用生效")
         note2.setStyleSheet("color: #e0fa86; font-size: 15px;")
         layout.addWidget(note2)
+
+        btn_filter = QPushButton("弹幕屏蔽设置")
+        btn_filter.clicked.connect(lambda: self._on_filter_settings())
+        layout.addWidget(btn_filter)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept)
@@ -1306,6 +1314,30 @@ class MainWindow(QMainWindow):
         self._export_worker.finished.connect(self._on_export_done)
         self._export_worker.error.connect(self._on_export_error)
         self._export_worker.start()
+
+    def _on_filter_settings(self):
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QPlainTextEdit,
+                                        QDialogButtonBox, QLabel)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("弹幕屏蔽")
+        dlg.resize(500, 400)
+        layout = QVBoxLayout(dlg)
+
+        layout.addWidget(QLabel("每行一条规则，支持关键字和正则表达式："))
+
+        editor = QPlainTextEdit()
+        editor.setPlaceholderText("关键字或者正则，例如：\n辛巴喵\n库特菌\n[打赏礼物].*")
+        editor.setPlainText("\n".join(self._danmaku_filter.rules))
+        layout.addWidget(editor)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            rules = [l.strip() for l in editor.toPlainText().splitlines() if l.strip()]
+            self._danmaku_filter.save(rules)
 
     def _save_render_config(self, preset: str, hw_quality: str, crf: int):
         """Persist render settings to config.json, merging with existing keys."""
