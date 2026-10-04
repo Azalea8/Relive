@@ -35,7 +35,10 @@ class VideoPlayer(QObject):
         wid = str(int(self._container.winId()))
         self._player = mpv.MPV(
             wid=wid,
-            keep_open="yes",
+            keep_open="no",
+            keep_open_pause="no",
+            demuxer_max_bytes="50MiB",
+            cache="no",
             script_opts="osc-visibility=never",
             input_default_bindings="no",
             input_vo_keyboard="no",
@@ -55,9 +58,16 @@ class VideoPlayer(QObject):
         if self._player is not None:
             self._timer.stop()
             try:
+                # 先清空播放列表并停止（确保解码器彻底释放）
+                self._player.command("playlist-clear")
+                self._player.command("stop")
+                # 等待一帧时间，让内部状态刷新（可选）
+                QTimer.singleShot(10, lambda: None)  # 简单延迟
                 self._player.terminate()
             except Exception as e:
                 self._log.error("[REINIT] terminate error: %s", e)
+            finally:
+                self._player = None   # 显式置空，帮助 GC
 
         self._duration = 0.0
         self._last_position = -1.0
