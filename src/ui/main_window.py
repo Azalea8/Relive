@@ -464,6 +464,9 @@ class MainWindow(QMainWindow):
 
         if self._platform_id() == "bilibili":
             self._check_bilibili_cookie()
+        elif self._platform_id() == "douyu":
+            if self._check_douyu_cookie(room_id) == "return":
+                return
 
         # Clear stale cache from previous session before reconnecting
         self._clean_cache()
@@ -485,32 +488,195 @@ class MainWindow(QMainWindow):
     def _platform_id(self) -> str:
         return self._platform_keys[self._platform_combo.currentIndex()]
 
+    def _check_douyu_cookie(self, room_id):
+        # if config.DOUYU_COOKIE.strip():
+        #     return
+        from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("斗鱼直播")
+        dlg.resize(500, 180)
+
+        layout = QVBoxLayout(dlg)
+
+        label = QLabel(
+            "斗鱼未登录时最高获取720P超清画质。\n"
+            "如需原画更高画质，请从浏览器复制登录Cookie。\n\n"
+            "Tip: 之前输入的cookie请先检测是否有效\n"
+            "根据个人经验，使用小号（长时间不登陆的），cookie刷新重置的概率较低"
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        tip = QLabel("是否现在 输入||检测 Cookie？")
+        layout.addWidget(tip)
+
+        btn_layout = QHBoxLayout()
+
+        btn_cookie = QPushButton("输入||检测 Cookie")
+        btn_continue = QPushButton("不登录继续")
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cookie)
+        btn_layout.addWidget(btn_continue)
+
+        layout.addLayout(btn_layout)
+
+        result = {"action": None}
+
+        def on_cookie():
+            result["action"] = "cookie"
+            dlg.accept()
+
+        def on_continue():
+            result["action"] = "link"
+            dlg.accept()
+
+        btn_cookie.clicked.connect(on_cookie)
+        btn_continue.clicked.connect(on_continue)
+
+        dlg.exec()
+
+        if result["action"] == "cookie":
+            return self._show_douyu_cookie_dialog(room_id)
+
+        elif result["action"] == "link":
+            return "link"
+
+        else:
+            # 用户点击右上角 X 或 Esc
+            return "return"
+        
     def _check_bilibili_cookie(self):
-        if config.BILIBILI_COOKIE.strip():
-            return
+        # if config.BILIBILI_COOKIE.strip():
+        #     return
 
         box = QMessageBox(self)
         box.setWindowTitle("B站直播")
         box.setText(
-            "B站未登录时只能获取720P超清画质。\n\n"
-            "如需原画/4K等更高画质，请从浏览器复制登录Cookie。"
+            "B站未登录时只能获取720P超清画质。\n"
+            "如需原画/4K等更高画质，请从浏览器复制登录Cookie。\n\n"
+            "Tip: 之前输入的cookie请检测是否有效\n"
+            "根据个人经验，使用小号（长时间不登陆的），cookie刷新重置的概率较低"
         )
-        box.setInformativeText("是否现在输入Cookie？")
+        box.setInformativeText("是否现在 输入||检测 Cookie？")
         btn_no = box.addButton("不登录继续", QMessageBox.ButtonRole.AcceptRole)
-        btn_yes = box.addButton("输入Cookie", QMessageBox.ButtonRole.ActionRole)
+        btn_yes = box.addButton("输入||检测 Cookie", QMessageBox.ButtonRole.ActionRole)
         box.setDefaultButton(btn_no)
         box.exec()
 
         if box.clickedButton() == btn_yes:
-            self._show_cookie_dialog()
+            self._show_bilibili_cookie_dialog()
 
-    def _show_cookie_dialog(self):
+    def _show_douyu_cookie_dialog(self, room_id):
+        from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QVBoxLayout, QMessageBox
+        
+        parsed = config.DOUYU_COOKIE
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("斗鱼 Cookie")
+        dlg.resize(700, 200)
+
+        layout = QVBoxLayout(dlg)
+
+        form = QFormLayout()
+        fields = {}
+
+        for key, label in [
+            ("dy_did", "dy_did"),
+            ("acf_jwt_token", "acf_jwt_token"),
+            ("dy_auth", "dy_auth")
+        ]:
+            le = QLineEdit(parsed.get(key, ""))
+            le.setMinimumWidth(500)
+            form.addRow(label, le)
+            fields[key] = le
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox()
+
+        btn_test = buttons.addButton(
+            "检测cookie有效性",
+            QDialogButtonBox.ButtonRole.ActionRole
+        )
+
+        btn_ok = buttons.addButton(
+            QDialogButtonBox.StandardButton.Ok
+        )
+
+        btn_cancel = buttons.addButton(
+            QDialogButtonBox.StandardButton.Cancel
+        )
+
+        layout.addWidget(buttons)
+
+        def test_cookie():
+            cookie = {
+                k: fields[k].text().strip()
+                for k in fields
+                if fields[k].text().strip()
+            }
+
+            if not cookie:
+                QMessageBox.warning(
+                    dlg,
+                    "提示",
+                    "请先填写 Cookie"
+                )
+                return
+
+            try:
+                # print("开始检测:", cookie)
+
+                result = PLATFORMS["douyu"].check_cookie(room_id, cookie)
+                # print(f"result: {result}")
+                if result:
+                    QMessageBox.information(
+                        dlg,
+                        "检测结果",
+                        "cookie 有效，请点击OK按钮保存cookie"
+                    )
+                else:
+                   QMessageBox.information(
+                        dlg,
+                        "检测结果",
+                        "cookie 无效，请重新复制同步"
+                    )
+
+            except Exception as e:
+                QMessageBox.critical(
+                    dlg,
+                    "检测失败",
+                    str(e)
+                )
+
+        btn_test.clicked.connect(test_cookie)
+
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+
+            cookie = {
+                k: fields[k].text().strip()
+                for k in fields
+                if fields[k].text().strip()
+            }
+
+            if cookie:
+                self._save_douyu_cookie(cookie)
+
+        else:
+            return "return"
+
+    def _show_bilibili_cookie_dialog(self):
         from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
 
         parsed = _parse_cookie_fields(config.BILIBILI_COOKIE)
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("输入B站Cookie")
+        dlg.setWindowTitle("B站Cookie")
         layout = QVBoxLayout(dlg)
         form = QFormLayout()
 
@@ -534,6 +700,22 @@ class MainWindow(QMainWindow):
             parts = [f"{k}={fields[k].text().strip()}" for k in fields if fields[k].text().strip()]
             if parts:
                 self._save_bilibili_cookie("; ".join(parts))
+
+    def _save_douyu_cookie(self, cookie: str):
+        import json
+        config.DOUYU_COOKIE = cookie
+        cfg = {}
+        try:
+            if os.path.exists(config.CONFIG_PATH):
+                with open(config.CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+        cfg["DOUYU_COOKIE"] = cookie
+
+        with open(config.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        log.info("[DOUYU] cookie saved to %s", config.CONFIG_PATH)
 
     def _save_bilibili_cookie(self, cookie: str):
         import json
@@ -1097,16 +1279,18 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        data = {
-            "CACHE_HOURS": cache_h.value(),
-            "TS_CLEANUP_HOURS": cleanup_h.value(),
-            "DANMAKU_FONT_SIZE": font_sz.value(),
-            "DANMAKU_DURATION": dur.value(),
-            "DANMAKU_OPACITY": opacity.value(),
-            "DANMAKU_DM_RATE": dmrate.value(),
-        }
+        arr = {}
+        with open(config.CONFIG_PATH, "r", encoding="utf-8") as f:
+            arr = json.load(f)
+        arr["CACHE_HOURS"] = cache_h.value()
+        arr["TS_CLEANUP_HOURS"] = cleanup_h.value()
+        arr["DANMAKU_FONT_SIZE"] = font_sz.value()
+        arr["DANMAKU_DURATION"] = dur.value()
+        arr["DANMAKU_OPACITY"] = opacity.value()
+        arr["DANMAKU_DM_RATE"] = dmrate.value()
+
         with open(config.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(arr, f, ensure_ascii=False, indent=2)
 
     def _on_danmaku_toggle(self):
         self._danmaku_enabled = self._btn_danmaku.isChecked()
